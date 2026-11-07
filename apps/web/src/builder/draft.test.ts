@@ -147,4 +147,23 @@ describe('scenario builder draft ops', () => {
     expect(new Set(d.clusters[0]!.platform!.workers.map((w) => w.zone))).toEqual(new Set(['dc1-a', 'dc1-b']));
     valid(d);
   });
+
+  it('removing a region that holds a whole cluster: delete is refused, move-to relocates everything', () => {
+    let d = D.addRegion(D.blankDraft());
+    const other = d.regions[1]!.id;
+    expect(D.removeRegion(d, 'dc1')).toMatch(/Move them to another location instead/);
+    d = ok(D.removeRegion(d, 'dc1', other));
+    expect(d.regions.map((r) => r.id)).toEqual([other]);
+    expect(d.clusters[0]!.controllers.every((n) => n.region === other)).toBe(true);
+    expect(d.producers[0]!.region).toBe(other);
+    valid(d);
+  });
+
+  it('moving an AZ into a sibling AZ keeps the cluster intact (k8s workers move too)', () => {
+    let d = D.setPlatform(D.splitRegion(D.blankDraft(), 'dc1'), 'main', true);
+    d = ok(D.removeZone(d, 'dc1', 'dc1-a', 'dc1-b'));
+    expect(d.clusters[0]!.brokers.every((b) => b.region === 'dc1-b')).toBe(true);
+    expect(d.clusters[0]!.platform!.workers.every((w) => w.zone === 'dc1-b')).toBe(true);
+    valid(d);
+  });
 });

@@ -1,4 +1,5 @@
 import type { ActionT, ClusterT, TopicT } from '@kafkasim/engine';
+import { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -43,7 +44,71 @@ export function GeneralSection({ d, set }: SectionProps) {
 
 // ------------------------------------------------------------------ regions + network
 
+/** Inline "what happens to what's placed here?" panel shown before removing a region/AZ that isn't empty. */
+function RemovePanel({ d, set, target, onDone }: SectionProps & { target: { region: string; zone?: string }; onDone: () => void }) {
+  const id = target.zone ?? target.region;
+  const gone = D.locationsUnder(d, id);
+  const what = D.placementsIn(d, gone);
+  const dests = D.locations(d).filter((l) => !gone.has(l.id));
+  const [dest, setDest] = useState(dests[0]?.id ?? '');
+  const lastZone = !!target.zone && d.regions.find((r) => r.id === target.region)!.zones!.length === 1;
+  const deleteBlocked = D.emptiesCluster(d, gone, id);
+  const run = (moveTo?: string) => {
+    const r = target.zone ? D.removeZone(d, target.region, target.zone, moveTo) : D.removeRegion(d, target.region, moveTo);
+    set(r);
+    if (typeof r !== 'string') onDone();
+  };
+  if (lastZone)
+    return (
+      <div role="alertdialog" aria-label={`Remove ${id}`} className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs">
+        <p>
+          {id} is the region's last AZ. Removing it turns {target.region} back into a single location, and everything in {id} stays in {target.region}.
+        </p>
+        <div className="flex gap-2">
+          <Button size="xs" onClick={() => run()}>
+            Remove AZ
+          </Button>
+          <Button size="xs" variant="ghost" onClick={onDone}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  return (
+    <div role="alertdialog" aria-label={`Remove ${id}`} className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs">
+      <p>
+        <span className="font-semibold">{id}</span> still holds {what.nodes.length > 0 && <span className="readout">{what.nodes.join(' ')}</span>}
+        {what.clients.length > 0 && <span className="readout"> · clients {what.clients.join(' ')}</span>}
+        {what.workers.length > 0 && <span className="readout"> · {what.workers.length} k8s workers</span>}.
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        {dests.length > 0 && (
+          <>
+            <SelectField className="w-56" label="Move everything to" value={dest} onChange={setDest} options={dests.map((l) => ({ value: l.id, label: l.isZone ? `${l.regionName} / ${l.name}` : l.name }))} />
+            <Button size="xs" onClick={() => run(dest)} disabled={!dest}>
+              Move &amp; remove
+            </Button>
+          </>
+        )}
+        <Button size="xs" variant="outline" className="text-critical" disabled={!!deleteBlocked} title={deleteBlocked ?? undefined} onClick={() => run()}>
+          Delete them &amp; remove
+        </Button>
+        <Button size="xs" variant="ghost" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+      {deleteBlocked && <p className="text-muted-foreground">{deleteBlocked}</p>}
+    </div>
+  );
+}
+
 export function RegionsSection({ d, set }: SectionProps) {
+  const [pending, setPending] = useState<{ region: string; zone?: string } | null>(null);
+  const askRemove = (region: string, zone?: string) => {
+    const lastZone = !!zone && d.regions.find((r) => r.id === region)!.zones!.length === 1;
+    if (!lastZone && D.placementsIn(d, D.locationsUnder(d, zone ?? region)).total === 0) return set(zone ? D.removeZone(d, region, zone) : D.removeRegion(d, region));
+    setPending({ region, ...(zone ? { zone } : {}) });
+  };
   const link = (a: string, b: string) => d.latency.links.find((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a))?.ms;
   return (
     <div className="space-y-6">
@@ -61,15 +126,19 @@ export function RegionsSection({ d, set }: SectionProps) {
             <Card key={r.id}>
               <div className="flex items-end gap-2">
                 <TextField label={`Region · id ${r.id}`} value={r.name ?? r.id} onCommit={(n) => set(D.renameRegion(d, r.id, n))} className="flex-1" />
-                <RemoveButton label={`Remove region ${r.id}`} onClick={() => set(D.removeRegion(d, r.id))} disabled={d.regions.length === 1} />
+                <RemoveButton label={`Remove region ${r.id}`} onClick={() => askRemove(r.id)} disabled={d.regions.length === 1} />
               </div>
+              {pending && pending.region === r.id && !pending.zone && <RemovePanel d={d} set={set} target={pending} onDone={() => setPending(null)} />}
               {r.zones?.length ? (
                 <div className="space-y-1.5">
                   <div className="text-[11px] font-medium text-muted-foreground">Availability zones</div>
                   {r.zones.map((z) => (
-                    <div key={z.id} className="flex items-end gap-2">
-                      <TextField label={`id ${z.id}`} value={z.name ?? z.id} onCommit={(n) => set(D.renameZone(d, r.id, z.id, n))} className="flex-1" />
-                      <RemoveButton label={`Remove zone ${z.id}`} onClick={() => set(D.removeZone(d, r.id, z.id))} />
+                    <div key={z.id} className="space-y-1.5">
+                      <div className="flex items-end gap-2">
+                        <TextField label={`id ${z.id}`} value={z.name ?? z.id} onCommit={(n) => set(D.renameZone(d, r.id, z.id, n))} className="flex-1" />
+                        <RemoveButton label={`Remove zone ${z.id}`} onClick={() => askRemove(r.id, z.id)} />
+                      </div>
+                      {pending && pending.region === r.id && pending.zone === z.id && <RemovePanel d={d} set={set} target={pending} onDone={() => setPending(null)} />}
                     </div>
                   ))}
                   <Button size="xs" variant="outline" onClick={() => set(D.addZone(d, r.id))}>

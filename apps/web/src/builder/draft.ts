@@ -150,14 +150,25 @@ function relocate(x: Draft, from: Set<string>, to: string) {
   for (const t of x.topics) if (t.mirror?.workerRegion && from.has(t.mirror.workerRegion)) t.mirror.workerRegion = to;
 }
 
-/** Returns an error string when removing these locations would leave a cluster with no controllers/brokers. */
-function emptiesCluster(d: Draft, gone: Set<string>, label: string): string | null {
+/** Returns an error string when deleting what's in these locations would leave a cluster with no controllers/brokers. */
+export function emptiesCluster(d: Draft, gone: Set<string>, label: string): string | null {
   for (const c of d.clusters) {
-    if (c.controllers.every((n) => gone.has(n.region))) return `Cluster ${c.id} has all its controllers in ${label}. Move or add controllers elsewhere first.`;
-    if (c.brokers.every((n) => gone.has(n.region))) return `Cluster ${c.id} has all its brokers in ${label}. Move or add brokers elsewhere first.`;
+    if (c.controllers.every((n) => gone.has(n.region))) return `Deleting would remove every controller of cluster ${c.id} (all in ${label}). Move them to another location instead.`;
+    if (c.brokers.every((n) => gone.has(n.region))) return `Deleting would remove every broker of cluster ${c.id} (all in ${label}). Move them to another location instead.`;
   }
   return null;
 }
+
+/** What is placed in these locations (to show before a removal). */
+export function placementsIn(d: Draft, locs: Set<string>) {
+  const nodes = d.clusters.flatMap((c) => [...c.controllers, ...c.brokers].filter((n) => locs.has(n.region)).map((n) => n.id));
+  const clients = [...d.producers, ...d.consumers].filter((p) => locs.has(p.region)).map((p) => p.id);
+  const workers = d.clusters.flatMap((c) => (c.platform?.workers ?? []).filter((w) => locs.has(w.zone)).map((w) => w.id));
+  return { nodes, clients, workers, total: nodes.length + clients.length + workers.length };
+}
+
+/** Locations an id covers (region → its AZs, or itself). */
+export const locationsUnder = (d: Draft, id: string) => new Set(expandLocation(d, id));
 
 function dropLocations(x: Draft, gone: Set<string>) {
   for (const c of x.clusters) {
@@ -173,12 +184,20 @@ function dropLocations(x: Draft, gone: Set<string>) {
 }
 
 /** Returns an error string instead of a draft when the removal would leave a cluster empty. */
-export function removeRegion(d: Draft, id: string): Draft | string {
+/**
+ * Remove a region. `moveTo` = a location to move everything placed there into
+ * (nodes, clients, k8s workers); without it those are deleted.
+ */
+export function removeRegion(d: Draft, id: string, moveTo?: string): Draft | string {
   if (d.regions.length === 1) return 'A scenario needs at least one region.';
   const gone = new Set(expandLocation(d, id));
-  const err = emptiesCluster(d, gone, id);
-  if (err) return err;
+  if (moveTo && gone.has(moveTo)) return 'Pick a location outside the region being removed.';
+  if (!moveTo) {
+    const err = emptiesCluster(d, gone, id);
+    if (err) return err;
+  }
   return edit(d, (x) => {
+    if (moveTo) relocate(x, gone, moveTo);
     x.regions = x.regions.filter((r) => r.id !== id);
     dropLocations(x, gone);
   });
@@ -220,7 +239,7 @@ export const renameZone = (d: Draft, regionId: string, zoneId: string, name: str
   edit(d, (x) => (x.regions.find((k) => k.id === regionId)!.zones!.find((z) => z.id === zoneId)!.name = name));
 
 /** Remove an AZ. Removing the last AZ turns the region back into a single location. */
-export function removeZone(d: Draft, regionId: string, zoneId: string): Draft | string {
+export function removeZone(d: Draft, regionId: string, zoneId: string, moveTo?: string): Draft | string {
   const r = d.regions.find((k) => k.id === regionId)!;
   if (r.zones!.length === 1)
     return edit(d, (x) => {
@@ -230,9 +249,13 @@ export function removeZone(d: Draft, regionId: string, zoneId: string): Draft | 
       scrub(x);
     });
   const gone = new Set([zoneId]);
-  const err = emptiesCluster(d, gone, zoneId);
-  if (err) return err;
+  if (moveTo === zoneId) return 'Pick another location.';
+  if (!moveTo) {
+    const err = emptiesCluster(d, gone, zoneId);
+    if (err) return err;
+  }
   return edit(d, (x) => {
+    if (moveTo) relocate(x, gone, moveTo);
     const xr = x.regions.find((k) => k.id === regionId)!;
     xr.zones = xr.zones!.filter((z) => z.id !== zoneId);
     dropLocations(x, gone);
