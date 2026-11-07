@@ -69,7 +69,8 @@ def create_topics(p: ComposePlan, manifest: dict) -> None:
         cfg = {}
         if t.get("minInsyncReplicas"):
             cfg["min.insync.replicas"] = str(t["minInsyncReplicas"])
-        new.append(NewTopic(t["name"], replica_assignment=assign, config=cfg))
+        # -1 = "use replica_assignment" (librdkafka rejects a partition count alongside an assignment)
+        new.append(NewTopic(t["name"], num_partitions=-1, replication_factor=-1, replica_assignment=assign, config=cfg))
     for name, fut in admin.create_topics(new, request_timeout=30).items():
         fut.result()
         log.info("created topic %s", name)
