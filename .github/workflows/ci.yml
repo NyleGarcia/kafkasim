@@ -23,7 +23,7 @@ jobs:
       - run: npm test -w @kafkasim/engine
       - run: npm run typecheck -w web
       - run: npm test -w web
-      - run: npx oxlint apps/web/src
+      - run: npm run lint -w web
       - run: npm run build -w web
   python:
     runs-on: ubuntu-latest
