@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "name": "CFK: broker container crash self-heals",
+  "description": "Broker b1 crashes three times. Kubernetes heals each crash with no human involved. The first time, kubelet restarts the container at once; the pod then needs ~20s (JVM start, log recovery) before the broker is back and catching up into the ISR. Repeated crashes put the pod in CrashLoopBackOff: 10s, then 20s waits before the next restart. The PVC stays attached, so the log survives and catch-up is incremental.",
+  "requiresConfluent": true,
+  "durationMs": 130000,
+  "regions": [
+    {
+      "id": "az1",
+      "name": "us-east-1a"
+    },
+    {
+      "id": "az2",
+      "name": "us-east-1b"
+    },
+    {
+      "id": "az3",
+      "name": "us-east-1c"
+    }
+  ],
+  "latency": {
+    "intraRegionMs": 0.5,
+    "interRegionMs": 1.5
+  },
+  "clusters": [
+    {
+      "id": "cfk",
+      "flavor": "confluent",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "az1"
+        },
+        {
+          "id": "c2",
+          "region": "az2"
+        },
+        {
+          "id": "c3",
+          "region": "az3"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "az1"
+        },
+        {
+          "id": "b2",
+          "region": "az1"
+        },
+        {
+          "id": "b3",
+          "region": "az2"
+        },
+        {
+          "id": "b4",
+          "region": "az2"
+        },
+        {
+          "id": "b5",
+          "region": "az3"
+        },
+        {
+          "id": "b6",
+          "region": "az3"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2,
+        "replicaLagTimeMaxMs": 10000
+      },
+      "platform": {
+        "type": "kubernetes",
+        "workers": [
+          {
+            "id": "w-az1-1",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-2",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-3",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az2-1",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-2",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-3",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az3-1",
+            "zone": "az3"
+          },
+          {
+            "id": "w-az3-2",
+            "zone": "az3"
+          },
+          {
+            "id": "w-az3-3",
+            "zone": "az3"
+          }
+        ],
+        "rackAwareness": true,
+        "storage": "zoneLocked",
+        "selfBalancing": {
+          "enabled": false
+        }
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "cfk",
+      "name": "events",
+      "partitions": 3,
+      "replicationFactor": 3
+    }
+  ],
+  "producers": [
+    {
+      "id": "svc",
+      "cluster": "cfk",
+      "region": "az1",
+      "topic": "events",
+      "acks": "all",
+      "ratePerSec": 40
+    }
+  ],
+  "actions": [
+    {
+      "type": "CONTAINER_CRASH",
+      "at": 10000,
+      "pod": "b1"
+    },
+    {
+      "type": "CONTAINER_CRASH",
+      "at": 50000,
+      "pod": "b1"
+    },
+    {
+      "type": "CONTAINER_CRASH",
+      "at": 85000,
+      "pod": "b1"
+    }
+  ]
+}

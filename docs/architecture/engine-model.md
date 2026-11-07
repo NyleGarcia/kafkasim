@@ -43,6 +43,31 @@ The engine (`packages/engine/src/engine.ts`) is a deterministic discrete-event m
 | MRC observers *(Confluent)* | observers replicate but are never in the ISR unless `observerPromotionPolicy=under-min-isr` and ISR < min.insync; demoted when sync replicas return | CP docs |
 | MirrorMaker 2 *(Apache)* | Connect worker consumes ≤ HW, produces with acks=all; offsets not preserved | KIP-382 |
 
+## Kubernetes / CFK platform (`cluster.platform`)
+
+Optional per cluster. Spec: [k8s-cfk](../plans/specs/k8s-cfk.md). A manifest region is a Kubernetes zone. Each controller and broker is a StatefulSet pod placed on a worker node.
+
+| Behaviour | Rule |
+|---|---|
+| Initial placement | each pod goes to the first schedulable worker in its zone with free capacity; a zone that can't host its pods is a manifest error |
+| Container crash (`CONTAINER_CRASH`, or `KILL_NODE` on a pod) | kubelet restarts in place: immediately the first time, then `crashBackoffBaseMs × 2^(n-2)` capped at `crashBackoffMaxMs` (CrashLoopBackOff), reset after 10 min of running. The PVC stays attached, so the log survives |
+| Startup | `podStartupMs` before the broker process starts and re-registers (fenced → caught up → unfenced) |
+| Pod delete / drain | SIGTERM → **controlled shutdown** (the controller fences the broker and moves its leaderships first) → exit after `terminationGraceMs` → StatefulSet recreates → scheduler |
+| Scheduling | Ready + schedulable worker, in the PVC's zone, with free capacity. Otherwise `Pending` with the reason |
+| Worker failure | processes die at once; NotReady after `nodeNotReadyAfterMs`; pods go `Unknown` and are **not replaced** (StatefulSet at-most-one semantics) until `K8S_NODE_RECOVER` or `K8S_NODE_DELETE` |
+| Zone outage | every worker in the zone fails, and the zone is network-partitioned from the others |
+| Storage | `zoneLocked` (default): the pod can only run in its PVC zone. `ephemeral`: a recreated pod starts with an empty log and re-replicates |
+| Rack awareness | on: `broker.rack = zone` (zone-interleaved placement); off: placement ignores zones |
+| Self-Balancing *(Confluent)* | a broker fenced longer than `brokerFailureThresholdMs` gets its replicas reassigned to healthy, least-loaded brokers, preferring uncovered zones. Add replica → wait for the ISR → drop the dead replica (`REPLICAS_CHANGE`) |
+
+Simplifications:
+- The pod's zone never changes, even with ephemeral storage.
+- No PodDisruptionBudgets, resource limits or OOM kills.
+- No taint-based eviction timers beyond NotReady.
+- No Strimzi.
+- The CFK operator's own reconcile loop is folded into StatefulSet behaviour.
+- Not calibrated against a real Kubernetes cluster yet (backlog: kind-based harness).
+
 ## Deliberate simplifications
 
 Fix these when calibration shows they matter.

@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "name": "CFK: AZ outage, zone-locked PVCs, Self-Balancing heal",
+  "description": "CFK on Kubernetes, 3 AZs, rack awareness on (broker.rack = zone), RF=3 so every partition has a replica in each AZ. us-east-1a fails at 10s. Its broker pods cannot move: their EBS-style PVCs are zone-locked, and the StatefulSet will not replace pods on an unreachable node anyway. Partitions stay online on the other two AZs, but under-replicated. After 30s (the default is 1h) Self-Balancing moves the dead brokers' replicas onto healthy brokers, restoring RF=3, though now in only 2 AZs. The zone returns at 120s.",
+  "requiresConfluent": true,
+  "durationMs": 150000,
+  "regions": [
+    {
+      "id": "az1",
+      "name": "us-east-1a"
+    },
+    {
+      "id": "az2",
+      "name": "us-east-1b"
+    },
+    {
+      "id": "az3",
+      "name": "us-east-1c"
+    }
+  ],
+  "latency": {
+    "intraRegionMs": 0.5,
+    "interRegionMs": 1.5
+  },
+  "clusters": [
+    {
+      "id": "cfk",
+      "flavor": "confluent",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "az1"
+        },
+        {
+          "id": "c2",
+          "region": "az2"
+        },
+        {
+          "id": "c3",
+          "region": "az3"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "az1"
+        },
+        {
+          "id": "b2",
+          "region": "az1"
+        },
+        {
+          "id": "b3",
+          "region": "az2"
+        },
+        {
+          "id": "b4",
+          "region": "az2"
+        },
+        {
+          "id": "b5",
+          "region": "az3"
+        },
+        {
+          "id": "b6",
+          "region": "az3"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2,
+        "replicaLagTimeMaxMs": 10000
+      },
+      "platform": {
+        "type": "kubernetes",
+        "workers": [
+          {
+            "id": "w-az1-1",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-2",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-3",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az2-1",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-2",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-3",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az3-1",
+            "zone": "az3"
+          },
+          {
+            "id": "w-az3-2",
+            "zone": "az3"
+          },
+          {
+            "id": "w-az3-3",
+            "zone": "az3"
+          }
+        ],
+        "rackAwareness": true,
+        "storage": "zoneLocked",
+        "selfBalancing": {
+          "enabled": true,
+          "brokerFailureThresholdMs": 30000
+        }
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "cfk",
+      "name": "orders",
+      "partitions": 6,
+      "replicationFactor": 3
+    }
+  ],
+  "producers": [
+    {
+      "id": "checkout",
+      "cluster": "cfk",
+      "region": "az2",
+      "topic": "orders",
+      "acks": "all",
+      "ratePerSec": 40
+    }
+  ],
+  "consumers": [
+    {
+      "id": "fulfil",
+      "cluster": "cfk",
+      "region": "az3",
+      "group": "fulfil",
+      "topic": "orders"
+    }
+  ],
+  "actions": [
+    {
+      "type": "ZONE_OUTAGE",
+      "at": 10000,
+      "zone": "az1"
+    },
+    {
+      "type": "ZONE_RECOVER",
+      "at": 120000,
+      "zone": "az1"
+    }
+  ]
+}

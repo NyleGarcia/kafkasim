@@ -86,4 +86,28 @@ describe('scenario builder draft ops', () => {
     }
     valid(d);
   });
+
+  it('Kubernetes: enabling CFK forces confluent, adds a worker per pod + a spare per zone, stays valid', () => {
+    const d = D.setPlatform(D.blankDraft(), 'main', true);
+    const c = d.clusters[0]!;
+    expect(c.flavor).toBe('confluent');
+    expect(c.platform!.workers).toHaveLength(7); // 6 pods in dc1 + 1 spare
+    valid(d);
+  });
+
+  it('Kubernetes: too few schedulable workers is reported, not crashed', () => {
+    let d = D.setPlatform(D.blankDraft(), 'main', true);
+    d = ok(D.setWorkerCount(d, 'main', 'dc1', 2));
+    expect(D.validate(d).some((p) => /no schedulable worker/.test(p.message))).toBe(true);
+  });
+
+  it('Kubernetes: k8s faults get valid defaults; turning k8s off drops them', () => {
+    let d = D.setPlatform(D.blankDraft(), 'main', true);
+    for (const type of ['CONTAINER_CRASH', 'POD_DELETE', 'K8S_NODE_FAIL', 'K8S_NODE_RECOVER', 'K8S_NODE_DELETE', 'K8S_CORDON', 'K8S_UNCORDON', 'ZONE_OUTAGE', 'ZONE_RECOVER'] as const)
+      d = D.setAction(D.addAction(d), d.actions.length, D.actionOfType(d, type, 2000));
+    valid(d);
+    d = D.setPlatform(d, 'main', false);
+    expect(d.actions.every((a) => !/K8S|POD|CONTAINER|ZONE/.test(a.type))).toBe(true);
+    valid(d);
+  });
 });

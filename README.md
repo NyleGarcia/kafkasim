@@ -4,7 +4,7 @@
 
 **▶ [nylegarcia.github.io/kafkasim](https://nylegarcia.github.io/kafkasim/)**
 
-- **Simulate.** Nine scenarios (broker failure, acks=1 vs acks=all, `min.insync.replicas`, zombie leader, unclean election, stretch-cluster partition, MirrorMaker 2 DR, plus Confluent Cluster Linking and MRC observers, labelled). Watch every produce, fetch, heartbeat and vote move between nodes. Scrub the timeline, or click any broker to kill, pause or isolate it at that moment.
+- **Simulate.** Thirteen scenarios (broker failure, acks=1 vs acks=all, `min.insync.replicas`, zombie leader, unclean election, stretch-cluster partition, MirrorMaker 2 DR, plus Confluent Cluster Linking, MRC observers and four CFK-on-Kubernetes scenarios, labelled). Build your own in the visual **scenario builder**: regions, clusters, topics, clients, Kubernetes and timed faults, no JSON needed. Watch every produce, fetch, heartbeat and vote move between nodes. Scrub the timeline, or click any broker to kill, pause or isolate it at that moment.
 - **Replay.** Load an event log recorded from real Kafka (or exported from a simulation). Same renderer, same schema.
 - **Live.** Run `kafkasim-bridge` next to your cluster and watch its leaders, ISRs and high watermarks change in real time.
 
@@ -24,6 +24,11 @@ Replication and failure:
 Cross-cluster:
 - Cluster Linking and MRC observers *(Confluent Platform)*
 - MirrorMaker 2 *(Apache)*
+
+On Kubernetes (Confluent for Kubernetes):
+- StatefulSet pods, zone-locked PVCs, and worker nodes that are schedulable only in some AZs
+- kubelet self-healing (CrashLoopBackOff), drains with controlled shutdown, stuck pods on failed nodes, AZ outages
+- rack awareness from the zone, and Self-Balancing healing
 
 Full rules and deliberate simplifications: [docs/architecture/engine-model.md](docs/architecture/engine-model.md).
 

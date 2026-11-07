@@ -1,4 +1,4 @@
-import type { ActionT, TopicT } from '@kafkasim/engine';
+import type { ActionT, ClusterT, TopicT } from '@kafkasim/engine';
 import { Plus, Trash2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -187,10 +187,107 @@ export function ClustersSection({ d, set }: SectionProps) {
               <NumberField label="broker.heartbeat.interval" unit="s" scale={1000} integer={false} min={0.05} value={cfg.brokerHeartbeatIntervalMs} onCommit={(v) => set(D.patchClusterConfig(d, c.id, { brokerHeartbeatIntervalMs: v }))} />
               <NumberField label="replica.fetch.wait.max" hint="Follower long-poll timeout" unit="ms" min={1} value={cfg.replicaFetchWaitMaxMs} onCommit={(v) => set(D.patchClusterConfig(d, c.id, { replicaFetchWaitMaxMs: v }))} />
             </div>
+            <PlatformPanel d={d} set={set} c={c} />
           </Card>
         );
       })}
     </Section>
+  );
+}
+
+function PlatformPanel({ d, set, c }: SectionProps & { c: ClusterT }) {
+  const pf = c.platform;
+  return (
+    <div className="space-y-3 border-t pt-3">
+      <SelectField
+        className="w-72"
+        label="Runs on"
+        hint="Kubernetes (CFK): pods per broker/controller, zone-locked PVCs, kubelet restarts, scheduling constraints per zone"
+        value={pf ? 'k8s' : 'vm'}
+        onChange={(v) => set(D.setPlatform(d, c.id, v === 'k8s'))}
+        options={[
+          { value: 'vm', label: 'VMs / bare metal' },
+          { value: 'k8s', label: 'Kubernetes: Confluent for Kubernetes' },
+        ]}
+      />
+      {pf && (
+        <>
+          <p className="text-[11px] text-muted-foreground">Regions are availability zones. Each Kafka pod needs a schedulable worker with free capacity in its zone (anti-affinity: 1 pod per worker by default).</p>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-muted-foreground">
+                <th className="pb-1 font-normal">Zone</th>
+                <th className="pb-1 font-normal">Kafka pods</th>
+                <th className="pb-1 font-normal">Workers</th>
+                <th className="pb-1 font-normal">Schedulable · capacity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.regions.map((r) => {
+                const ws = pf.workers.filter((w) => w.zone === r.id);
+                const podsHere = [...c.controllers, ...c.brokers].filter((n) => n.region === r.id).length;
+                const room = ws.filter((w) => w.schedulable).reduce((a, w) => a + w.capacity, 0);
+                return (
+                  <tr key={r.id} className="border-t border-border/60 align-top">
+                    <td className="readout py-1.5">{r.name ?? r.id}</td>
+                    <td className={cn('readout py-1.5', room < podsHere && 'text-critical')}>
+                      {podsHere} / room {room}
+                    </td>
+                    <td className="py-1.5">
+                      <Stepper label={`workers in ${r.id}`} value={ws.length} onChange={(n) => set(D.setWorkerCount(d, c.id, r.id, n))} />
+                    </td>
+                    <td className="py-1.5">
+                      <div className="flex flex-wrap gap-1">
+                        {ws.map((w) => (
+                          <span key={w.id} className={cn('readout inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[10px]', !w.schedulable && 'border-dashed text-warning')}>
+                            <button type="button" aria-pressed={w.schedulable} title={w.schedulable ? 'schedulable: click to cordon' : 'cordoned: click to allow scheduling'} onClick={() => set(D.patchWorker(d, c.id, w.id, { schedulable: !w.schedulable }))} className="hover:underline">
+                              {w.id}
+                            </button>
+                            <button type="button" title="capacity (Kafka pods); click to cycle 1-3" aria-label={`${w.id} capacity ${w.capacity}`} onClick={() => set(D.patchWorker(d, c.id, w.id, { capacity: (w.capacity % 3) + 1 }))} className="rounded bg-muted px-1 hover:bg-accent">
+                              ×{w.capacity}
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <SelectField
+              label="Storage"
+              hint="zone-locked: EBS/PD-style RWO volume pinned to its zone. ephemeral: emptyDir/local, log lost when the pod moves"
+              value={pf.storage}
+              onChange={(storage) => set(D.patchPlatform(d, c.id, { storage }))}
+              options={[
+                { value: 'zoneLocked', label: 'PVC, zone-locked' },
+                { value: 'ephemeral', label: 'ephemeral (lost on move)' },
+              ]}
+            />
+            <CheckField label="Rack awareness (broker.rack = zone)" checked={pf.rackAwareness} onChange={(rackAwareness) => set(D.patchPlatform(d, c.id, { rackAwareness }))} />
+            <NumberField label="Pod startup" hint="Image pull, JVM start, log recovery" unit="s" scale={1000} integer={false} min={0} value={pf.podStartupMs} onCommit={(v) => set(D.patchPlatform(d, c.id, { podStartupMs: v }))} />
+            <NumberField label="Node NotReady after" hint="node-monitor-grace-period" unit="s" scale={1000} integer={false} min={0} value={pf.nodeNotReadyAfterMs} onCommit={(v) => set(D.patchPlatform(d, c.id, { nodeNotReadyAfterMs: v }))} />
+            <NumberField label="CrashLoop back-off base" unit="s" scale={1000} integer={false} min={0.1} value={pf.crashBackoffBaseMs} onCommit={(v) => set(D.patchPlatform(d, c.id, { crashBackoffBaseMs: v }))} />
+            <NumberField label="Termination grace" hint="SIGTERM → controlled shutdown → exit" unit="s" scale={1000} integer={false} min={0} value={pf.terminationGraceMs} onCommit={(v) => set(D.patchPlatform(d, c.id, { terminationGraceMs: v }))} />
+            <CheckField label="Self-Balancing: heal failed brokers" hint="Move replicas off a broker that stays failed (Confluent)" checked={pf.selfBalancing.enabled} onChange={(enabled) => set(D.patchPlatform(d, c.id, { selfBalancing: { ...pf.selfBalancing, enabled } }))} />
+            {pf.selfBalancing.enabled && (
+              <NumberField
+                label="…after broker failed for"
+                hint="confluent.balancer.heal.broker.failure.threshold.ms (default 1h)"
+                unit="s"
+                scale={1000}
+                integer={false}
+                min={1}
+                value={pf.selfBalancing.brokerFailureThresholdMs}
+                onCommit={(v) => set(D.patchPlatform(d, c.id, { selfBalancing: { ...pf.selfBalancing, brokerFailureThresholdMs: v } }))}
+              />
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -405,13 +502,25 @@ const ACTION_TYPES: { value: ActionT['type']; label: string }[] = [
   { value: 'FAILOVER', label: 'Promote mirror (failover)' },
   { value: 'STOP_PRODUCER', label: 'Stop producer' },
   { value: 'START_PRODUCER', label: 'Start producer' },
+  { value: 'CONTAINER_CRASH', label: 'k8s: crash container' },
+  { value: 'POD_DELETE', label: 'k8s: delete pod (drain)' },
+  { value: 'K8S_NODE_FAIL', label: 'k8s: fail worker node' },
+  { value: 'K8S_NODE_RECOVER', label: 'k8s: recover worker node' },
+  { value: 'K8S_NODE_DELETE', label: 'k8s: delete node object' },
+  { value: 'K8S_CORDON', label: 'k8s: cordon worker/zone' },
+  { value: 'K8S_UNCORDON', label: 'k8s: uncordon worker/zone' },
+  { value: 'ZONE_OUTAGE', label: 'k8s: AZ outage' },
+  { value: 'ZONE_RECOVER', label: 'k8s: AZ recover' },
 ];
+const K8S_ACTION = /^(CONTAINER_CRASH|POD_DELETE|K8S_|ZONE_)/;
 
 export function FaultsSection({ d, set }: SectionProps) {
   const nodes = d.clusters.flatMap((c) => D.nodeIdsOf(c));
   const nodeOpts = nodes.map((n) => ({ value: n, label: n }));
   const regionIds = d.regions.map((r) => r.id);
   const mirrors = d.topics.filter((t) => t.mirror);
+  const workers = D.k8sWorkers(d);
+  const pods = D.k8sPods(d);
   return (
     <Section
       title="Timed faults"
@@ -428,7 +537,19 @@ export function FaultsSection({ d, set }: SectionProps) {
         return (
           <Card key={`${i}-${a.type}-${a.at}`} className="flex flex-wrap items-end gap-3 space-y-0">
             <NumberField label="At" unit="s" scale={1000} integer={false} min={0} max={d.durationMs / 1000} className="w-24" value={a.at} onCommit={(at) => put({ ...a, at })} />
-            <SelectField className="w-52" label="Fault" value={a.type} options={ACTION_TYPES.map((o) => ({ ...o, disabled: o.value === 'FAILOVER' && !mirrors.length }))} onChange={(type) => put(D.actionOfType(d, type, a.at))} />
+            <SelectField className="w-52" label="Fault" value={a.type} options={ACTION_TYPES.map((o) => ({ ...o, disabled: (o.value === 'FAILOVER' && !mirrors.length) || (K8S_ACTION.test(o.value) && !workers.length) }))} onChange={(type) => put(D.actionOfType(d, type, a.at))} />
+            {'worker' in a && <SelectField className="w-36" label="Worker" value={a.worker} options={workers.map((w) => ({ value: w.id, label: w.id }))} onChange={(worker) => put({ ...a, worker })} />}
+            {'pod' in a && <SelectField className="w-32" label="Pod" value={a.pod} options={pods.map((p) => ({ value: p, label: p }))} onChange={(pod) => put({ ...a, pod })} />}
+            {'target' in a && (
+              <SelectField
+                className="w-40"
+                label="Worker or zone"
+                value={a.target}
+                options={[...regionIds.map((r) => ({ value: r, label: `zone ${r}` })), ...workers.map((w) => ({ value: w.id, label: w.id }))]}
+                onChange={(target) => put({ ...a, target })}
+              />
+            )}
+            {'zone' in a && <SelectField className="w-32" label="Zone" value={a.zone} options={regionIds.map((r) => ({ value: r, label: r }))} onChange={(zone) => put({ ...a, zone })} />}
             {'node' in a && <SelectField className="w-32" label="Node" value={a.node} options={nodeOpts} onChange={(node) => put({ ...a, node })} />}
             {a.type === 'PARTITION' && (
               <Field label="Cut off (everything else stays together)" className="min-w-60 flex-1">

@@ -3,7 +3,7 @@ import { ChevronDown } from 'lucide-react';
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { StatusDot, type StatusDotTone } from '@/components/ui/status-dot';
-import { nodeFaults, type FaultOption } from '@/lib/faults';
+import { nodeFaults, workerFaults, type FaultOption } from '@/lib/faults';
 import { cn } from '@/lib/utils';
 
 /** Keyboard-accessible twin of the canvas: every node + its fault menu. */
@@ -20,7 +20,8 @@ export function NodesPanel({ manifest, view, onFault, disabled }: { manifest: Ma
               {nodes
                 .filter((n) => n.cluster === c.id)
                 .map((n) => {
-                  const tone: StatusDotTone = n.status === 'dead' ? 'error' : n.status === 'paused' || n.fenced ? 'warning' : n.activeController ? 'observer' : 'success';
+                  const podBad = n.pod && n.pod.phase !== 'Running';
+                  const tone: StatusDotTone = n.status === 'dead' && !podBad ? 'error' : podBad ? (n.pod!.phase === 'ContainerCreating' ? 'active' : 'warning') : n.status === 'paused' || n.fenced ? 'warning' : n.activeController ? 'observer' : 'success';
                   const opts = nodeFaults(manifest, n);
                   return (
                     <li key={n.id}>
@@ -46,6 +47,33 @@ export function NodesPanel({ manifest, view, onFault, disabled }: { manifest: Ma
                   );
                 })}
             </ul>
+            {c.platform && (
+              <ul className="mt-1 flex flex-wrap gap-1" aria-label={`${c.id} Kubernetes workers`}>
+                {Object.values(view.workers)
+                  .filter((w) => w.cluster === c.id)
+                  .map((w) => (
+                    <li key={w.id}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          disabled={disabled}
+                          className={cn('readout inline-flex items-center gap-0.5 rounded border border-dashed px-1.5 py-0.5 text-[10px] hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60', !w.ready && 'text-critical', w.ready && !w.schedulable && 'text-warning')}
+                          aria-label={`worker ${w.id} in ${w.zone}: ${w.ready ? 'Ready' : 'NotReady'}${w.schedulable ? '' : ', cordoned'}. Open fault menu.`}
+                        >
+                          {w.id}
+                          <ChevronDown className="size-3 opacity-60" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="w-56">
+                          {workerFaults(w).map((o) => (
+                            <DropdownMenuItem key={o.label} onSelect={() => onFault(o)} className={cn(o.tone === 'critical' && 'text-critical', o.tone === 'warning' && 'text-warning')}>
+                              {o.label}
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </li>
+                  ))}
+              </ul>
+            )}
           </div>
         ))}
       </div>

@@ -13,7 +13,7 @@
  * Simplifications are listed in docs/architecture/engine-model.md.
  */
 import type { ActionT, ClusterT, ConsumerT, Manifest, MsgKind, ProducerT, SimEvent, TopicT } from './schema.ts';
-import { assignReplicas, tpKey } from './schema.ts';
+import { assignReplicas, initialPlacement, tpKey } from './schema.ts';
 import { EventQueue, rng, type Rng } from './util.ts';
 
 type Kind = 'broker' | 'controller' | 'producer' | 'consumer' | 'mm2';
@@ -115,6 +115,42 @@ interface ClusterRt {
   lastHb: Map<string, number>;
   incarnations: Map<string, number>;
   fenced: Set<string>;
+  fencedAt: Map<string, number>;
+  /** brokers in controlled shutdown: stay fenced until they re-register (new incarnation) */
+  shuttingDown: Set<string>;
+  /** brokers Self-Balancing already started healing away from */
+  healed: Set<string>;
+  /** tp → reassignment in progress (Self-Balancing) */
+  moving: Map<string, { from: string; to: string }>;
+}
+
+type PodPhase = 'Pending' | 'ContainerCreating' | 'Running' | 'Terminating' | 'CrashLoopBackOff' | 'Unknown';
+
+interface WorkerRt {
+  id: string;
+  cluster: string;
+  zone: string;
+  /** hardware/kubelet alive */
+  alive: boolean;
+  /** API view (NotReady only after node-monitor-grace-period) */
+  ready: boolean;
+  deleted: boolean;
+  schedulable: boolean;
+  capacity: number;
+  pods: Set<string>;
+}
+
+interface PodRt {
+  id: string;
+  cluster: string;
+  phase: PodPhase;
+  worker: string | null;
+  /** zone the PVC is bound to (zoneLocked storage) */
+  pvcZone: string;
+  restarts: number;
+  lastCrashT: number;
+  /** bumps on every new pod object (StatefulSet recreate) — stale timers check it */
+  gen: number;
 }
 
 interface Batch {
@@ -159,6 +195,9 @@ interface Mm2Rt {
 const META_PUSH: MsgKind = 'metadata';
 const CONTROLLER_TICK_MS = 500;
 const ISR_CHECK_MS = 1_000;
+const SBC_TICK_MS = 5_000;
+/** kubelet resets CrashLoopBackOff after the container runs this long */
+const CRASH_RESET_MS = 600_000;
 
 export interface SimOptions {
   /** Extra actions injected interactively (merged with manifest.actions). */
@@ -190,6 +229,8 @@ class Sim {
   private producers = new Map<string, ProducerRt>();
   private consumers = new Map<string, ConsumerRt>();
   private mm2 = new Map<string, Mm2Rt>();
+  private workers = new Map<string, WorkerRt>();
+  private pods = new Map<string, PodRt>();
   private latency = new Map<string, number>();
   private groups: string[][] | null = null;
   private processed = 0;
@@ -296,6 +337,10 @@ class Sim {
         lastHb: new Map(),
         incarnations: new Map(),
         fenced: new Set(),
+        fencedAt: new Map(),
+        shuttingDown: new Set(),
+        healed: new Set(),
+        moving: new Map(),
       };
       this.clusters.set(c.id, crt);
       for (const ctl of c.controllers) {
@@ -314,6 +359,7 @@ class Sim {
         crt.lastHb.set(b.id, 0);
         crt.incarnations.set(b.id, 0);
       }
+      if (c.platform) this.setupK8s(c);
     }
     // topics (sources before mirrors so mirror can look up source)
     const ordered = [...m.topics].sort((a, b) => Number(!!a.mirror) - Number(!!b.mirror));
@@ -438,6 +484,14 @@ class Sim {
     }
     const actions = [...this.m.actions, ...(this.opts.extraActions ?? [])].sort((a, b) => a.at - b.at);
     for (const a of actions) this.at(a.at, null, () => this.applyAction(a));
+    for (const c of this.clusters.values()) {
+      if (!c.def.platform?.selfBalancing.enabled) continue;
+      const tick = () => {
+        this.selfBalancingTick(c);
+        this.at(this.now + SBC_TICK_MS, null, tick);
+      };
+      this.at(SBC_TICK_MS, null, tick);
+    }
 
     const until = this.opts.untilMs ?? this.m.durationMs;
     for (;;) {
@@ -473,12 +527,17 @@ class Sim {
         const cfg = this.clusters.get(this.nodes.get(id)!.cluster)!.def.config;
         this.every(cfg.brokerHeartbeatIntervalMs, id, () => this.brokerHeartbeat(id), true);
         if (!initial) this.after(0, id, () => this.brokerHeartbeat(id));
-        for (const p of this.parts.values()) {
-          if (!p.rep.has(id)) continue;
-          this.every(cfg.replicaFetchWaitMaxMs, id, () => this.followerFetch(p, id));
-          this.every(ISR_CHECK_MS, id, () => this.isrCheck(p, id));
-          if (p.mirror?.type === 'cluster_link') this.every(p.mirror.fetchIntervalMs, id, () => this.linkFetch(p, id));
-        }
+        // one loop per broker over the partitions it hosts *now* (reassignment adds/removes replicas)
+        this.every(cfg.replicaFetchWaitMaxMs, id, () => {
+          for (const p of this.parts.values()) {
+            if (!p.rep.has(id)) continue;
+            this.followerFetch(p, id);
+            if (p.mirror?.type === 'cluster_link') this.linkFetch(p, id);
+          }
+        });
+        this.every(ISR_CHECK_MS, id, () => {
+          for (const p of this.parts.values()) if (p.rep.has(id)) this.isrCheck(p, id);
+        });
         break;
       }
       case 'producer': {
@@ -506,25 +565,52 @@ class Sim {
     const detail = JSON.stringify(a);
     this.emit({ t: this.now, type: 'ACTION', action: a.type, detail });
     switch (a.type) {
-      case 'KILL_NODE': {
-        const n = this.nodes.get(a.node)!;
-        if (n.status === 'dead') return;
-        n.status = 'dead';
-        n.incarnation++;
-        n.pending = [];
-        this.emit({ t: this.now, type: 'NODE_STATUS', node: n.id, status: 'dead', reason: 'SIGKILL' });
-        this.onKilled(n);
+      case 'KILL_NODE':
+        // on Kubernetes a killed broker process is a container crash: kubelet restarts it
+        if (this.pods.has(a.node)) this.containerCrash(a.node);
+        else this.killNode(a.node, 'SIGKILL');
+        break;
+      case 'RESTART_NODE':
+        this.restartNode(a.node, 'restart');
+        break;
+      case 'K8S_NODE_FAIL':
+        this.workerFail(a.worker);
+        break;
+      case 'K8S_NODE_RECOVER':
+        this.workerRecover(a.worker);
+        break;
+      case 'K8S_NODE_DELETE':
+        this.workerDelete(a.worker);
+        break;
+      case 'K8S_CORDON':
+      case 'K8S_UNCORDON':
+        for (const w of this.workers.values())
+          if (w.id === a.target || w.zone === a.target) {
+            w.schedulable = a.type === 'K8S_UNCORDON';
+            this.emitWorker(w);
+          }
+        this.scheduleAll();
+        break;
+      case 'POD_DELETE':
+        this.podDelete(a.pod);
+        break;
+      case 'CONTAINER_CRASH':
+        this.containerCrash(a.pod);
+        break;
+      case 'ZONE_OUTAGE': {
+        for (const w of this.workers.values()) if (w.zone === a.zone) this.workerFail(w.id);
+        const others = this.m.regions.map((r) => r.id).filter((r) => r !== a.zone);
+        if (others.length) {
+          this.groups = [others, [a.zone]];
+          this.emit({ t: this.now, type: 'NETWORK', partitioned: true, groups: this.groups });
+        }
         break;
       }
-      case 'RESTART_NODE': {
-        const n = this.nodes.get(a.node)!;
-        if (n.status !== 'dead') return;
-        n.status = 'running';
-        n.incarnation++;
-        this.emit({ t: this.now, type: 'NODE_STATUS', node: n.id, status: 'running', reason: 'restart' });
-        this.startNode(n.id, n.kind, false);
+      case 'ZONE_RECOVER':
+        this.groups = null;
+        this.emit({ t: this.now, type: 'NETWORK', partitioned: false });
+        for (const w of this.workers.values()) if (w.zone === a.zone) this.workerRecover(w.id);
         break;
-      }
       case 'PAUSE_NODE': {
         const n = this.nodes.get(a.node)!;
         if (n.status !== 'running') return;
@@ -568,6 +654,25 @@ class Sim {
         break;
       }
     }
+  }
+
+  private killNode(id: string, reason: string) {
+    const n = this.nodes.get(id)!;
+    if (n.status === 'dead') return;
+    n.status = 'dead';
+    n.incarnation++;
+    n.pending = [];
+    this.emit({ t: this.now, type: 'NODE_STATUS', node: n.id, status: 'dead', reason });
+    this.onKilled(n);
+  }
+
+  private restartNode(id: string, reason: string) {
+    const n = this.nodes.get(id)!;
+    if (n.status !== 'dead') return;
+    n.status = 'running';
+    n.incarnation++;
+    this.emit({ t: this.now, type: 'NODE_STATUS', node: n.id, status: 'running', reason });
+    this.startNode(n.id, n.kind, false);
   }
 
   private onKilled(n: NodeRt) {
@@ -750,13 +855,14 @@ class Sim {
       c.lastHb.set(id, this.now);
       if (prevInc !== inc) {
         c.incarnations.set(id, inc);
+        c.shuttingDown.delete(id);
         if (!c.fenced.has(id)) this.fence(c, id, 'new incarnation (restart)');
       }
       // full metadata in response; restarted broker rebuilds its view
       const snapshot = this.metaSnapshot(c.def.id, id);
       this.send(ctl, id, 'heartbeat', () => {
         for (const [key, meta] of snapshot) this.applyMetadata(this.parts.get(key)!, id, meta);
-        if (c.fenced.has(id) && this.isActive(c, ctl) && this.nodes.get(id)!.incarnation === inc) this.unfence(c, id);
+        if (c.fenced.has(id) && !c.shuttingDown.has(id) && this.isActive(c, ctl) && this.nodes.get(id)!.incarnation === inc) this.unfence(c, id);
       });
     });
   }
@@ -770,6 +876,7 @@ class Sim {
 
   private fence(c: ClusterRt, b: string, reason: string) {
     c.fenced.add(b);
+    if (!c.fencedAt.has(b)) c.fencedAt.set(b, this.now);
     this.emit({ t: this.now, type: 'BROKER_FENCE', cluster: c.def.id, node: b, fenced: true, reason });
     for (const p of this.parts.values()) {
       if (p.cluster !== c.def.id || !p.rep.has(b)) continue;
@@ -780,6 +887,7 @@ class Sim {
 
   private unfence(c: ClusterRt, b: string) {
     c.fenced.delete(b);
+    c.fencedAt.delete(b);
     this.emit({ t: this.now, type: 'BROKER_FENCE', cluster: c.def.id, node: b, fenced: false, reason: 'heartbeat ok' });
     for (const p of this.parts.values()) if (p.cluster === c.def.id && p.meta.leader === null && p.rep.has(b)) this.electLeader(c, p, `${b} back`);
   }
@@ -816,7 +924,8 @@ class Sim {
   }
 
   private applyMetadata(p: Partition, b: string, meta: PartMeta) {
-    const rep = p.rep.get(b)!;
+    const rep = p.rep.get(b);
+    if (!rep) return; // replica reassigned away
     const prev = rep.view;
     if (prev && (meta.epoch < prev.epoch || (meta.epoch === prev.epoch && meta.pEpoch <= prev.pEpoch))) return;
     rep.view = meta;
@@ -836,7 +945,8 @@ class Sim {
   }
 
   private becomeLeader(p: Partition, b: string) {
-    const rep = p.rep.get(b)!;
+    const rep = p.rep.get(b);
+    if (!rep) return; // replica reassigned away
     rep.followers.clear();
     for (const f of [...p.replicas, ...p.observers])
       if (f !== b) rep.followers.set(f, { leo: 0, lastCaughtUpT: this.now, lastFetchT: this.now, leaderLeoAtLastFetch: rep.log.length });
@@ -848,7 +958,8 @@ class Sim {
   // ------------------------------------------------------------ replication
 
   private followerFetch(p: Partition, b: string) {
-    const rep = p.rep.get(b)!;
+    const rep = p.rep.get(b);
+    if (!rep) return; // replica reassigned away
     const view = rep.view;
     if (!view || !view.leader || view.leader === b) return;
     if (rep.fetchInFlight >= 0 && this.now - rep.fetchInFlight < 3_000) return;
@@ -858,9 +969,9 @@ class Sim {
     const lastEpoch = rep.log.at(-1)?.epoch ?? -1;
     const epoch = view.epoch;
     this.send(b, leader, 'fetch', () => {
-      const lrep = p.rep.get(leader)!;
+      const lrep = p.rep.get(leader);
       const reply = (fn: () => void, records = 0) => this.send(leader, b, 'fetch_resp', fn, records);
-      if (lrep.view?.leader !== leader) return reply(() => (rep.fetchInFlight = -1));
+      if (!lrep || lrep.view?.leader !== leader) return reply(() => (rep.fetchInFlight = -1));
       if (lrep.view.epoch !== epoch) return reply(() => (rep.fetchInFlight = -1));
       // divergence check (KIP-595 style lastFetchedEpoch)
       const end = endOffsetForEpoch(lrep.log, lastEpoch);
@@ -919,7 +1030,8 @@ class Sim {
   }
 
   private truncate(p: Partition, b: string, to: number, why: string) {
-    const rep = p.rep.get(b)!;
+    const rep = p.rep.get(b);
+    if (!rep) return; // replica reassigned away
     if (rep.log.length <= to) return;
     const from = rep.log.length;
     rep.log.length = to;
@@ -954,7 +1066,8 @@ class Sim {
   }
 
   private isrCheck(p: Partition, b: string) {
-    const rep = p.rep.get(b)!;
+    const rep = p.rep.get(b);
+    if (!rep) return; // replica reassigned away
     const view = rep.view;
     if (!view || view.leader !== b || rep.alterInFlight) return;
     const lag = this.clusters.get(p.cluster)!.def.config.replicaLagTimeMaxMs;
@@ -1130,7 +1243,8 @@ class Sim {
   }
 
   private handleProduce(p: Partition, b: string, producer: string, seq: number, ids: string[], acks: 0 | 1 | 'all', reply: (err?: string) => void) {
-    const rep = p.rep.get(b)!;
+    const rep = p.rep.get(b);
+    if (!rep) return reply('NOT_LEADER_OR_FOLLOWER'); // replica moved away (reassignment)
     const view = rep.view;
     if (!view || view.leader !== b) return reply('NOT_LEADER_OR_FOLLOWER');
     if (p.mirror?.active && p.mirror.type === 'cluster_link') return reply('READ_ONLY_MIRROR');
@@ -1198,8 +1312,8 @@ class Sim {
       const id = c.def.id;
       this.after(5_000, id, () => c.inFlight.delete(tp));
       this.send(id, leader, 'consume', () => {
-        const rep = p.rep.get(leader)!;
-        if (rep.view?.leader !== leader)
+        const rep = p.rep.get(leader);
+        if (!rep || rep.view?.leader !== leader)
           return this.send(leader, id, 'fetch_resp', () => {
             c.inFlight.delete(tp);
             c.leaders.set(tp, null);
@@ -1226,7 +1340,8 @@ class Sim {
 
   /** Cluster Linking: mirror partition leader fetches from source leader across WAN, offsets preserved. */
   private linkFetch(p: Partition, b: string) {
-    const rep = p.rep.get(b)!;
+    const rep = p.rep.get(b);
+    if (!rep) return; // replica reassigned away
     if (!p.mirror?.active || rep.view?.leader !== b || rep.fetchInFlight >= 0) return;
     const src = this.parts.get(p.mirror.sourceKey)!;
     const srcLeader = src.meta.leader;
@@ -1235,8 +1350,8 @@ class Sim {
     const from = rep.log.length;
     this.after(5_000, b, () => (rep.fetchInFlight = -1));
     this.send(b, srcLeader, 'link_fetch', () => {
-      const srep = src.rep.get(srcLeader)!;
-      if (srep.view?.leader !== srcLeader) return this.send(srcLeader, b, 'fetch_resp', () => (rep.fetchInFlight = -1));
+      const srep = src.rep.get(srcLeader);
+      if (!srep || srep.view?.leader !== srcLeader) return this.send(srcLeader, b, 'fetch_resp', () => (rep.fetchInFlight = -1));
       const respond = () => {
         const recs = srep.log.slice(from, Math.min(srep.hw, from + 2000));
         const srcHw = srep.hw;
@@ -1277,9 +1392,9 @@ class Sim {
       this.after(10_000, w.id, () => w.inFlight.delete(p.key));
       const pos = w.position.get(src.key) ?? 0;
       this.send(w.id, srcLeader, 'consume', () => {
-        const srep = src.rep.get(srcLeader)!;
-        const recs = srep.view?.leader === srcLeader ? srep.log.slice(pos, Math.min(srep.hw, pos + 500)) : [];
-        const srcHw = srep.hw;
+        const srep = src.rep.get(srcLeader);
+        const recs = srep?.view?.leader === srcLeader ? srep.log.slice(pos, Math.min(srep.hw, pos + 500)) : [];
+        const srcHw = srep?.hw ?? 0;
         this.send(srcLeader, w.id, 'fetch_resp', () => {
           if (!recs.length) {
             w.inFlight.delete(p.key);
@@ -1315,6 +1430,222 @@ class Sim {
       this.emit({ t: this.now, type: 'MIRROR_PROMOTED', tp: p.key, rpoRecords: rpo });
       if (rpo) this.note('error', `${p.key} promoted with ${rpo} acked source records missing (RPO)`);
       else this.note('info', `${p.key} promoted, no acked records missing`);
+    }
+  }
+
+  // ------------------------------------------------------------ Kubernetes (CFK)
+
+  private setupK8s(c: ClusterT) {
+    const pf = c.platform!;
+    for (const w of pf.workers)
+      this.workers.set(w.id, { id: w.id, cluster: c.id, zone: w.zone, alive: true, ready: true, deleted: false, schedulable: w.schedulable, capacity: w.capacity, pods: new Set() });
+    const place = initialPlacement(c);
+    for (const n of [...c.controllers, ...c.brokers]) {
+      const wid = place.get(n.id)!;
+      this.workers.get(wid)!.pods.add(n.id);
+      this.pods.set(n.id, { id: n.id, cluster: c.id, phase: 'Running', worker: wid, pvcZone: n.region, restarts: 0, lastCrashT: -Infinity, gen: 0 });
+    }
+    for (const w of this.workers.values()) if (w.cluster === c.id) this.emitWorker(w);
+    for (const pod of this.pods.values()) if (pod.cluster === c.id) this.emitPod(pod, 'scheduled');
+  }
+
+  private platformOf(cluster: string) {
+    return this.clusters.get(cluster)!.def.platform!;
+  }
+
+  private emitWorker(w: WorkerRt) {
+    this.emit({ t: this.now, type: 'K8S_NODE', node: w.id, zone: w.zone, ready: w.ready && !w.deleted, schedulable: w.schedulable && !w.deleted });
+  }
+
+  private emitPod(pod: PodRt, reason?: string) {
+    this.emit({ t: this.now, type: 'POD', pod: pod.id, phase: pod.phase, worker: pod.worker, ...(reason ? { reason } : {}) });
+  }
+
+  private setPhase(pod: PodRt, phase: PodPhase, reason?: string) {
+    pod.phase = phase;
+    this.emitPod(pod, reason);
+  }
+
+  private workerFail(wid: string) {
+    const w = this.workers.get(wid)!;
+    if (!w.alive) return;
+    w.alive = false;
+    for (const id of w.pods) this.killNode(id, `worker ${w.id} failed`);
+    const grace = this.platformOf(w.cluster).nodeNotReadyAfterMs;
+    this.after(grace, null, () => {
+      if (w.alive || w.deleted) return;
+      w.ready = false;
+      this.emitWorker(w);
+      for (const id of w.pods) {
+        const pod = this.pods.get(id)!;
+        // StatefulSet guarantees ≤1 pod per ordinal: it won't replace a pod it can't confirm dead
+        this.setPhase(pod, 'Unknown', `node ${w.id} unreachable; StatefulSet won't recreate it until the node is deleted or the pod force-deleted`);
+      }
+      this.note('warn', `worker ${w.id} NotReady; ${w.pods.size} Kafka pod(s) stuck on it`);
+    });
+  }
+
+  private workerRecover(wid: string) {
+    const w = this.workers.get(wid)!;
+    if (w.alive || w.deleted) return;
+    w.alive = true;
+    w.ready = true;
+    this.emitWorker(w);
+    for (const id of w.pods) this.startPod(this.pods.get(id)!, `worker ${w.id} back; kubelet restarts the container`);
+    this.scheduleAll();
+  }
+
+  private workerDelete(wid: string) {
+    const w = this.workers.get(wid)!;
+    if (w.deleted) return;
+    for (const id of [...w.pods]) this.killNode(id, `worker ${w.id} deleted`);
+    w.alive = false;
+    w.ready = false;
+    w.deleted = true;
+    this.emitWorker(w);
+    for (const id of [...w.pods]) this.recreatePod(this.pods.get(id)!, `node ${w.id} deleted`);
+  }
+
+  /** kubectl delete pod / drain: SIGTERM → controlled shutdown → exit → StatefulSet recreates it. */
+  private podDelete(id: string) {
+    const pod = this.pods.get(id)!;
+    if (pod.phase === 'Terminating') return;
+    const running = this.nodes.get(id)!.status === 'running';
+    if (!running) return this.recreatePod(pod, 'pod deleted');
+    this.setPhase(pod, 'Terminating', 'SIGTERM');
+    const n = this.nodes.get(id)!;
+    if (n.kind === 'broker') this.controlledShutdown(id);
+    const gen = pod.gen;
+    this.after(this.platformOf(pod.cluster).terminationGraceMs, null, () => {
+      if (pod.gen !== gen) return;
+      this.killNode(id, 'terminated (pod deleted)');
+      this.recreatePod(pod, 'pod deleted');
+    });
+  }
+
+  /** Broker asks the controller to move its leaderships away before exiting (no unavailability). */
+  private controlledShutdown(id: string) {
+    const c = this.clusters.get(this.nodes.get(id)!.cluster)!;
+    const ctl = c.active;
+    if (!ctl) return;
+    this.send(id, ctl, 'heartbeat', () => {
+      if (!this.isActive(c, ctl)) return;
+      c.shuttingDown.add(id);
+      if (!c.fenced.has(id)) this.fence(c, id, 'controlled shutdown');
+    });
+  }
+
+  private containerCrash(id: string) {
+    const pod = this.pods.get(id)!;
+    if (this.nodes.get(id)!.status === 'dead' || pod.phase !== 'Running') return;
+    this.killNode(id, 'container crashed');
+    const pf = this.platformOf(pod.cluster);
+    if (this.now - pod.lastCrashT > CRASH_RESET_MS) pod.restarts = 0;
+    pod.restarts++;
+    pod.lastCrashT = this.now;
+    const delay = pod.restarts === 1 ? 0 : Math.min(pf.crashBackoffMaxMs, pf.crashBackoffBaseMs * 2 ** (pod.restarts - 2));
+    const gen = pod.gen;
+    if (delay > 0) this.setPhase(pod, 'CrashLoopBackOff', `restart ${pod.restarts}: back-off ${Math.round(delay / 1000)}s`);
+    this.after(delay, null, () => {
+      if (pod.gen !== gen) return;
+      const w = pod.worker ? this.workers.get(pod.worker) : undefined;
+      if (w?.alive) this.startPod(pod, `kubelet restart #${pod.restarts}`);
+    });
+  }
+
+  /** ContainerCreating → (podStartupMs) → Running + broker process starts. */
+  private startPod(pod: PodRt, reason: string) {
+    this.setPhase(pod, 'ContainerCreating', reason);
+    const gen = pod.gen;
+    this.after(this.platformOf(pod.cluster).podStartupMs, null, () => {
+      const w = pod.worker ? this.workers.get(pod.worker) : undefined;
+      if (pod.gen !== gen || pod.phase !== 'ContainerCreating' || !w?.alive) return;
+      this.setPhase(pod, 'Running');
+      this.restartNode(pod.id, 'pod started');
+    });
+  }
+
+  /** StatefulSet recreates the pod object → Pending → scheduler. */
+  private recreatePod(pod: PodRt, reason: string) {
+    if (pod.worker) this.workers.get(pod.worker)!.pods.delete(pod.id);
+    pod.worker = null;
+    pod.gen++;
+    pod.restarts = 0;
+    this.setPhase(pod, 'Pending', reason);
+    this.scheduleAll();
+  }
+
+  private scheduleAll() {
+    for (const pod of [...this.pods.values()].sort((a, b) => a.id.localeCompare(b.id))) {
+      if (pod.phase !== 'Pending' || pod.worker) continue;
+      const pf = this.platformOf(pod.cluster);
+      const w = [...this.workers.values()].find((w) => w.cluster === pod.cluster && w.alive && w.ready && !w.deleted && w.schedulable && w.zone === pod.pvcZone && w.pods.size < w.capacity);
+      if (!w) {
+        const why = pf.storage === 'zoneLocked' ? `PVC is bound to ${pod.pvcZone}: no schedulable worker with room there` : `no schedulable worker with room in ${pod.pvcZone}`;
+        this.emitPod(pod, why);
+        continue;
+      }
+      w.pods.add(pod.id);
+      pod.worker = w.id;
+      if (pf.storage === 'ephemeral') this.wipe(pod.id);
+      this.startPod(pod, `scheduled on ${w.id}`);
+    }
+  }
+
+  /** Ephemeral storage: a new pod starts with an empty log and re-replicates everything. */
+  private wipe(id: string) {
+    for (const p of this.parts.values()) {
+      const rep = p.rep.get(id);
+      if (!rep || !rep.log.length) continue;
+      this.truncate(p, id, 0, 'new pod, ephemeral storage');
+      rep.seqs.clear();
+    }
+  }
+
+  // ------------------------------------------------------------ Confluent Self-Balancing
+
+  /** Heal: move replicas off brokers that stayed fenced past the threshold (rack/zone-aware). */
+  private selfBalancingTick(c: ClusterRt) {
+    if (!c.active || !this.isActive(c, c.active)) return;
+    const pf = c.def.platform!;
+    const zone = (b: string) => this.nodes.get(b)!.region;
+    for (const [b, since] of c.fencedAt) {
+      if (c.healed.has(b) || this.now - since < pf.selfBalancing.brokerFailureThresholdMs) continue;
+      c.healed.add(b);
+      this.note('warn', `Self-Balancing: ${b} failed for ${Math.round((this.now - since) / 1000)}s; moving its replicas`, b);
+      for (const p of this.parts.values()) {
+        if (p.cluster !== c.def.id || !p.replicas.includes(b) || c.moving.has(p.key)) continue;
+        const live = p.replicas.filter((r) => r !== b);
+        const usedZones = new Set(live.map(zone));
+        const load = (x: string) => [...this.parts.values()].filter((q) => q.replicas.includes(x)).length;
+        const cands = c.def.brokers
+          .map((x) => x.id)
+          .filter((x) => !p.replicas.includes(x) && !p.observers.includes(x) && !c.fenced.has(x) && this.nodes.get(x)!.status === 'running')
+          .sort((x, y) => Number(usedZones.has(zone(x))) - Number(usedZones.has(zone(y))) || load(x) - load(y) || x.localeCompare(y));
+        const to = cands[0];
+        if (!to) {
+          this.note('error', `Self-Balancing: no healthy broker to take ${p.key} from ${b}`);
+          continue;
+        }
+        p.replicas.push(to);
+        p.rep.set(to, this.newReplica({ ...p.meta, isr: [...p.meta.isr] }));
+        const leader = p.meta.leader ? p.rep.get(p.meta.leader) : undefined;
+        if (leader?.view?.leader === p.meta.leader) leader.followers.set(to, { leo: 0, lastCaughtUpT: -Infinity, lastFetchT: this.now, leaderLeoAtLastFetch: 0 });
+        c.moving.set(p.key, { from: b, to });
+        this.emit({ t: this.now, type: 'REPLICAS_CHANGE', tp: p.key, replicas: [...p.replicas], observers: [...p.observers] });
+        this.commit(c, p, {}, `reassign ${b} → ${to}`);
+      }
+    }
+    for (const [key, mv] of c.moving) {
+      const p = this.parts.get(key)!;
+      if (!p.meta.isr.includes(mv.to)) continue;
+      p.replicas = p.replicas.filter((r) => r !== mv.from);
+      p.rep.delete(mv.from);
+      for (const r of p.rep.values()) r.followers.delete(mv.from);
+      c.moving.delete(key);
+      this.emit({ t: this.now, type: 'REPLICAS_CHANGE', tp: p.key, replicas: [...p.replicas], observers: [...p.observers] });
+      this.commit(c, p, { isr: p.meta.isr.filter((r) => r !== mv.from) }, `reassignment done: ${mv.from} → ${mv.to}`);
+      this.note('info', `Self-Balancing: ${p.key} now on [${p.replicas.join(', ')}]`);
     }
   }
 

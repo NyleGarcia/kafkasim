@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "name": "Kubernetes: rack awareness off + AZ outage",
+  "description": "The same 3-AZ cluster, RF=2, but without rack awareness: replica placement ignores zones, so some partitions have both replicas in us-east-1a. When that zone fails, those partitions go OFFLINE (no eligible leader), while partitions that happened to span zones survive. Turn rack awareness on in the builder to see every partition survive. The adaptive partitioner keeps keyless throughput up by routing around the dead partitions, but anything keyed to them would be stuck.",
+  "requiresConfluent": true,
+  "durationMs": 60000,
+  "regions": [
+    {
+      "id": "az1",
+      "name": "us-east-1a"
+    },
+    {
+      "id": "az2",
+      "name": "us-east-1b"
+    },
+    {
+      "id": "az3",
+      "name": "us-east-1c"
+    }
+  ],
+  "latency": {
+    "intraRegionMs": 0.5,
+    "interRegionMs": 1.5
+  },
+  "clusters": [
+    {
+      "id": "cfk",
+      "flavor": "confluent",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "az1"
+        },
+        {
+          "id": "c2",
+          "region": "az2"
+        },
+        {
+          "id": "c3",
+          "region": "az3"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "az1"
+        },
+        {
+          "id": "b2",
+          "region": "az1"
+        },
+        {
+          "id": "b3",
+          "region": "az2"
+        },
+        {
+          "id": "b4",
+          "region": "az2"
+        },
+        {
+          "id": "b5",
+          "region": "az3"
+        },
+        {
+          "id": "b6",
+          "region": "az3"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2,
+        "replicaLagTimeMaxMs": 10000
+      },
+      "platform": {
+        "type": "kubernetes",
+        "workers": [
+          {
+            "id": "w-az1-1",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-2",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-3",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az2-1",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-2",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-3",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az3-1",
+            "zone": "az3"
+          },
+          {
+            "id": "w-az3-2",
+            "zone": "az3"
+          },
+          {
+            "id": "w-az3-3",
+            "zone": "az3"
+          }
+        ],
+        "rackAwareness": false,
+        "storage": "zoneLocked",
+        "selfBalancing": {
+          "enabled": false
+        }
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "cfk",
+      "name": "orders",
+      "partitions": 6,
+      "replicationFactor": 2,
+      "minInsyncReplicas": 1
+    }
+  ],
+  "producers": [
+    {
+      "id": "checkout",
+      "cluster": "cfk",
+      "region": "az2",
+      "topic": "orders",
+      "acks": "all",
+      "ratePerSec": 40
+    }
+  ],
+  "actions": [
+    {
+      "type": "ZONE_OUTAGE",
+      "at": 10000,
+      "zone": "az1"
+    }
+  ]
+}

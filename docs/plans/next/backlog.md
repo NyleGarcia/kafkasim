@@ -12,3 +12,5 @@ updated: 2026-11-07
 - [ ] Producer `max.in.flight` > 1 with idempotent ordering
 - [ ] Shareable links (manifest + injected actions in the URL hash)
 - [ ] Code-split zod/engine out of the main bundle (current ~700 kB)
+- [ ] Calibrate the Kubernetes/CFK layer against a real cluster (kind + CFK in CI, or a zima namespace)
+- [ ] Strimzi operator mode; PodDisruptionBudgets and rolling restarts

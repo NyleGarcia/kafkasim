@@ -4,7 +4,7 @@
  * touches engine internals.
  */
 import type { Manifest, SimEvent } from './schema.ts';
-import { assignReplicas, tpKey } from './schema.ts';
+import { assignReplicas, initialPlacement, tpKey } from './schema.ts';
 
 export interface NodeView {
   id: string;
@@ -14,6 +14,18 @@ export interface NodeView {
   status: 'running' | 'dead' | 'paused';
   fenced: boolean;
   activeController: boolean;
+  /** Kubernetes clusters only */
+  pod?: { phase: PodPhase; worker: string | null; reason?: string };
+}
+
+export type PodPhase = Extract<SimEvent, { type: 'POD' }>['phase'];
+
+export interface WorkerView {
+  id: string;
+  cluster: string;
+  zone: string;
+  ready: boolean;
+  schedulable: boolean;
 }
 
 export interface PartitionView {
@@ -52,6 +64,7 @@ export interface ClientView {
 export interface ViewState {
   t: number;
   nodes: Record<string, NodeView>;
+  workers: Record<string, WorkerView>;
   partitions: Record<string, PartitionView>;
   clients: Record<string, ClientView>;
   controllers: Record<string, { node: string | null; epoch: number }>;
@@ -69,6 +82,7 @@ export function initialView(m: Manifest): ViewState {
   const add = (id: string, kind: NodeView['kind'], cluster: string, region: string) =>
     (nodes[id] = { id, kind, cluster, region, status: 'running', fenced: false, activeController: false });
   const controllers: ViewState['controllers'] = {};
+  const workers: Record<string, WorkerView> = {};
   for (const c of m.clusters) {
     c.controllers.forEach((x, i) => {
       add(x.id, 'controller', c.id, x.region);
@@ -76,6 +90,10 @@ export function initialView(m: Manifest): ViewState {
     });
     for (const b of c.brokers) add(b.id, 'broker', c.id, b.region);
     controllers[c.id] = { node: c.controllers[0]!.id, epoch: 1 };
+    if (c.platform) {
+      for (const w of c.platform.workers) workers[w.id] = { id: w.id, cluster: c.id, zone: w.zone, ready: true, schedulable: w.schedulable };
+      for (const [pod, worker] of initialPlacement(c)) nodes[pod]!.pod = { phase: 'Running', worker };
+    }
   }
   const clients: Record<string, ClientView> = {};
   const client = (id: string) => (clients[id] = { id, acked: 0, errors: 0, retries: 0, latencies: [], consumed: 0, lag: 0 });
@@ -121,6 +139,7 @@ export function initialView(m: Manifest): ViewState {
   return {
     t: 0,
     nodes,
+    workers,
     partitions,
     clients,
     controllers,
@@ -236,6 +255,29 @@ export function reduceEvent(s: ViewState, e: SimEvent): void {
       s.partitioned = e.partitioned;
       s.groups = e.groups ?? null;
       break;
+    case 'K8S_NODE': {
+      const w = s.workers[e.node];
+      if (w) {
+        w.ready = e.ready;
+        w.schedulable = e.schedulable;
+      }
+      break;
+    }
+    case 'POD': {
+      const n = s.nodes[e.pod];
+      if (n) n.pod = { phase: e.phase, worker: e.worker, ...(e.reason ? { reason: e.reason } : {}) };
+      break;
+    }
+    case 'REPLICAS_CHANGE': {
+      const p = s.partitions[e.tp];
+      if (p) {
+        p.replicas = [...e.replicas];
+        p.observers = [...e.observers];
+        for (const r of [...e.replicas, ...e.observers]) p.leo[r] ??= 0;
+        for (const r of Object.keys(p.leo)) if (!e.replicas.includes(r) && !e.observers.includes(r)) delete p.leo[r];
+      }
+      break;
+    }
     case 'ACTION':
     case 'NOTE':
     case 'MSG':

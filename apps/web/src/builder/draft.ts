@@ -4,7 +4,7 @@
  * never leave dangling ids behind (topics → removed brokers, clients → removed
  * topics, actions → removed nodes, …). Validation is the engine's own parser.
  */
-import { assignReplicas, Cluster, Consumer, Manifest, Producer, Topic, validateRefs, type ActionT, type ClusterT, type ConsumerT, type ProducerT, type TopicT } from '@kafkasim/engine';
+import { assignReplicas, Cluster, Consumer, Manifest, Platform, Producer, Topic, validateRefs, type ActionT, type ClusterT, type ConsumerT, type ProducerT, type TopicT } from '@kafkasim/engine';
 
 export type Draft = Manifest;
 
@@ -19,6 +19,7 @@ export function allIds(d: Draft): Set<string> {
   for (const c of d.clusters) {
     s.add(c.id);
     for (const n of [...c.controllers, ...c.brokers]) s.add(n.id);
+    for (const w of c.platform?.workers ?? []) s.add(w.id);
   }
   for (const p of [...d.producers, ...d.consumers]) s.add(p.id);
   return s;
@@ -412,5 +413,75 @@ export function actionOfType(d: Draft, type: ActionT['type'], at: number): Actio
     case 'STOP_PRODUCER':
     case 'START_PRODUCER':
       return { type, at, producer: d.producers[0]?.id ?? 'producer1' };
+    case 'K8S_NODE_FAIL':
+    case 'K8S_NODE_RECOVER':
+    case 'K8S_NODE_DELETE':
+      return { type, at, worker: k8sWorkers(d)[0]?.id ?? 'w1' };
+    case 'K8S_CORDON':
+    case 'K8S_UNCORDON':
+      return { type, at, target: k8sWorkers(d)[0]?.id ?? d.regions[0]!.id };
+    case 'POD_DELETE':
+    case 'CONTAINER_CRASH':
+      return { type, at, pod: k8sPods(d).find((p) => p.startsWith('b')) ?? k8sPods(d)[0] ?? node };
+    case 'ZONE_OUTAGE':
+    case 'ZONE_RECOVER':
+      return { type, at, zone: d.regions[0]!.id };
   }
 }
+
+export const k8sWorkers = (d: Draft) => d.clusters.flatMap((c) => c.platform?.workers ?? []);
+export const k8sPods = (d: Draft) => d.clusters.filter((c) => c.platform).flatMap(nodeIdsOf);
+
+// ------------------------------------------------------------------ Kubernetes platform
+
+/** Turn Kubernetes (CFK) on/off for a cluster. CFK implies Confluent Server. */
+export function setPlatform(d: Draft, clusterId: string, on: boolean) {
+  return edit(d, (x) => {
+    const c = x.clusters.find((k) => k.id === clusterId)!;
+    if (!on) {
+      delete c.platform;
+      x.actions = x.actions.filter((a) => !('worker' in a || 'pod' in a || 'target' in a || a.type === 'ZONE_OUTAGE' || a.type === 'ZONE_RECOVER'));
+      return;
+    }
+    c.flavor = 'confluent';
+    const taken = allIds(x);
+    const workers: { id: string; zone: string }[] = [];
+    // one worker per Kafka pod in each zone, plus one spare so pods can move
+    for (const r of x.regions) {
+      const n = [...c.controllers, ...c.brokers].filter((k) => k.region === r.id).length;
+      for (let i = 0; i < (n ? n + 1 : 0); i++) {
+        const id = uniqueId(x, `w-${r.id}-`, taken);
+        taken.add(id);
+        workers.push({ id, zone: r.id });
+      }
+    }
+    c.platform = Platform.parse({ type: 'kubernetes', workers });
+  });
+}
+
+export const patchPlatform = (d: Draft, clusterId: string, patch: Partial<NonNullable<ClusterT['platform']>>) =>
+  edit(d, (x) => Object.assign(x.clusters.find((k) => k.id === clusterId)!.platform!, patch));
+
+export function setWorkerCount(d: Draft, clusterId: string, zone: string, n: number): Draft | string {
+  if (n < 0 || n > 9) return 'Between 0 and 9 workers per zone.';
+  return edit(d, (x) => {
+    const pf = x.clusters.find((k) => k.id === clusterId)!.platform!;
+    const here = pf.workers.filter((w) => w.zone === zone);
+    if (n > here.length) {
+      const taken = allIds(x);
+      for (const w of pf.workers) taken.add(w.id);
+      for (let i = here.length; i < n; i++) {
+        const id = uniqueId(x, `w-${zone}-`, taken);
+        taken.add(id);
+        pf.workers.push({ id, zone, schedulable: true, capacity: 1 });
+      }
+    } else {
+      const drop = new Set(here.slice(n).map((w) => w.id));
+      pf.workers = pf.workers.filter((w) => !drop.has(w.id));
+      x.actions = x.actions.filter((a) => !(('worker' in a && drop.has(a.worker)) || ('target' in a && drop.has(a.target))));
+    }
+  });
+}
+
+export const patchWorker = (d: Draft, clusterId: string, worker: string, patch: { schedulable?: boolean; capacity?: number }) =>
+  edit(d, (x) => Object.assign(x.clusters.find((k) => k.id === clusterId)!.platform!.workers.find((w) => w.id === worker)!, patch));

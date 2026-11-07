@@ -10,3 +10,4 @@ updated: 2026-11-07
 - [[next/backlog]] — ([open](next/backlog.md)) — confirmed backlog
 - [[later/ideas]] — ([open](later/ideas.md)) — ice box
 - [[specs/kafkasim-mvp]] — ([open](specs/kafkasim-mvp.md)) — MVP spec (active)
+- [[specs/k8s-cfk]] — ([open](specs/k8s-cfk.md)) — Kubernetes / CFK platform layer (done, v1)

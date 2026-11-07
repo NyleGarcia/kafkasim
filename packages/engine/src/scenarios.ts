@@ -5,6 +5,33 @@ const ctl3 = (region: string | string[], prefix = 'c') =>
   [0, 1, 2].map((i) => ({ id: `${prefix}${i + 1}`, region: Array.isArray(region) ? region[i]! : region }));
 const brokers = (ids: string[], region: string) => ids.map((id) => ({ id, region }));
 
+
+/** 3-zone CFK cluster: 1 controller + 2 brokers per zone, `workersPerZone` workers (capacity 1) per zone. */
+const cfk = (opts: { workersPerZone?: number[]; rackAwareness?: boolean; selfBalancingMs?: number; storage?: 'zoneLocked' | 'ephemeral' } = {}) => {
+  const zones = ['az1', 'az2', 'az3'];
+  const wpz = opts.workersPerZone ?? [3, 3, 3];
+  return {
+    id: 'cfk',
+    flavor: 'confluent' as const,
+    controllers: zones.map((z, i) => ({ id: `c${i + 1}`, region: z })),
+    brokers: zones.flatMap((z, i) => [{ id: `b${2 * i + 1}`, region: z }, { id: `b${2 * i + 2}`, region: z }]),
+    config: { minInsyncReplicas: 2, replicaLagTimeMaxMs: 10_000 },
+    platform: {
+      type: 'kubernetes' as const,
+      workers: zones.flatMap((z, i) => Array.from({ length: wpz[i]! }, (_, k) => ({ id: `w-${z}-${k + 1}`, zone: z }))),
+      rackAwareness: opts.rackAwareness ?? true,
+      storage: opts.storage ?? 'zoneLocked',
+      selfBalancing: opts.selfBalancingMs ? { enabled: true, brokerFailureThresholdMs: opts.selfBalancingMs } : { enabled: false },
+    },
+  };
+};
+const azs = [
+  { id: 'az1', name: 'us-east-1a' },
+  { id: 'az2', name: 'us-east-1b' },
+  { id: 'az3', name: 'us-east-1c' },
+];
+const azLatency = { intraRegionMs: 0.5, interRegionMs: 1.5 };
+
 export const scenarios: ManifestInput[] = [
   {
     schemaVersion: 1,
@@ -252,6 +279,74 @@ export const scenarios: ManifestInput[] = [
     actions: [
       { type: 'KILL_NODE', at: 12_000, node: 'e2' },
       { type: 'RESTART_NODE', at: 32_000, node: 'e2' },
+    ],
+  },
+  {
+    schemaVersion: 1,
+    name: 'CFK: AZ outage, zone-locked PVCs, Self-Balancing heal',
+    description:
+      'CFK on Kubernetes, 3 AZs, rack awareness on (broker.rack = zone), RF=3 so every partition has a replica in each AZ. us-east-1a fails at 10s. Its broker pods cannot move: their EBS-style PVCs are zone-locked, and the StatefulSet will not replace pods on an unreachable node anyway. Partitions stay online on the other two AZs, but under-replicated. After 30s (the default is 1h) Self-Balancing moves the dead brokers\' replicas onto healthy brokers, restoring RF=3, though now in only 2 AZs. The zone returns at 120s.',
+    requiresConfluent: true,
+    durationMs: 150_000,
+    regions: azs,
+    latency: azLatency,
+    clusters: [cfk({ selfBalancingMs: 30_000 })],
+    topics: [{ cluster: 'cfk', name: 'orders', partitions: 6, replicationFactor: 3 }],
+    producers: [{ id: 'checkout', cluster: 'cfk', region: 'az2', topic: 'orders', acks: 'all', ratePerSec: 40 }],
+    consumers: [{ id: 'fulfil', cluster: 'cfk', region: 'az3', group: 'fulfil', topic: 'orders' }],
+    actions: [
+      { type: 'ZONE_OUTAGE', at: 10_000, zone: 'az1' },
+      { type: 'ZONE_RECOVER', at: 120_000, zone: 'az1' },
+    ],
+  },
+  {
+    schemaVersion: 1,
+    name: 'CFK: broker container crash self-heals',
+    description:
+      'Broker b1 crashes three times. Kubernetes heals each crash with no human involved. The first time, kubelet restarts the container at once; the pod then needs ~20s (JVM start, log recovery) before the broker is back and catching up into the ISR. Repeated crashes put the pod in CrashLoopBackOff: 10s, then 20s waits before the next restart. The PVC stays attached, so the log survives and catch-up is incremental.',
+    requiresConfluent: true,
+    durationMs: 130_000,
+    regions: azs,
+    latency: azLatency,
+    clusters: [cfk()],
+    topics: [{ cluster: 'cfk', name: 'events', partitions: 3, replicationFactor: 3 }],
+    producers: [{ id: 'svc', cluster: 'cfk', region: 'az1', topic: 'events', acks: 'all', ratePerSec: 40 }],
+    actions: [
+      { type: 'CONTAINER_CRASH', at: 10_000, pod: 'b1' },
+      { type: 'CONTAINER_CRASH', at: 50_000, pod: 'b1' },
+      { type: 'CONTAINER_CRASH', at: 85_000, pod: 'b1' },
+    ],
+  },
+  {
+    schemaVersion: 1,
+    name: 'Kubernetes: rack awareness off + AZ outage',
+    description:
+      'The same 3-AZ cluster, RF=2, but without rack awareness: replica placement ignores zones, so some partitions have both replicas in us-east-1a. When that zone fails, those partitions go OFFLINE (no eligible leader), while partitions that happened to span zones survive. Turn rack awareness on in the builder to see every partition survive. The adaptive partitioner keeps keyless throughput up by routing around the dead partitions, but anything keyed to them would be stuck.',
+    requiresConfluent: true,
+    durationMs: 60_000,
+    regions: azs,
+    latency: azLatency,
+    clusters: [cfk({ rackAwareness: false })],
+    topics: [{ cluster: 'cfk', name: 'orders', partitions: 6, replicationFactor: 2, minInsyncReplicas: 1 }],
+    producers: [{ id: 'checkout', cluster: 'cfk', region: 'az2', topic: 'orders', acks: 'all', ratePerSec: 40 }],
+    actions: [{ type: 'ZONE_OUTAGE', at: 10_000, zone: 'az1' }],
+  },
+  {
+    schemaVersion: 1,
+    name: 'Kubernetes: drain into a full zone, broker stuck Pending',
+    description:
+      'us-east-1c has exactly three workers, one per Kafka pod, and no spare. At 10s the worker hosting b5 is cordoned and drained. Pod b5 gets a controlled shutdown: leadership moves first, so no unavailability. The StatefulSet recreates the pod, but its PVC is bound to us-east-1c and the only other worker there is full, so b5 sits Pending and its partitions stay under-replicated. Uncordoning at 60s lets b5 back onto its old node; it catches up and rejoins the ISR.',
+    requiresConfluent: true,
+    durationMs: 100_000,
+    regions: azs,
+    latency: azLatency,
+    clusters: [cfk({ workersPerZone: [4, 4, 3] })],
+    topics: [{ cluster: 'cfk', name: 'payments', partitions: 3, replicationFactor: 3 }],
+    producers: [{ id: 'pos', cluster: 'cfk', region: 'az1', topic: 'payments', acks: 'all', ratePerSec: 30 }],
+    actions: [
+      { type: 'K8S_CORDON', at: 10_000, target: 'w-az3-2' },
+      { type: 'POD_DELETE', at: 10_500, pod: 'b5' },
+      { type: 'K8S_UNCORDON', at: 60_000, target: 'w-az3-2' },
     ],
   },
 ];

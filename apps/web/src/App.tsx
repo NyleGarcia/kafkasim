@@ -19,7 +19,7 @@ import { ScenarioBuilder } from '@/builder/ScenarioBuilder';
 import { blankDraft } from '@/builder/draft';
 import { useLiveBridge } from '@/hooks/useLiveBridge';
 import { usePlayback } from '@/hooks/usePlayback';
-import { nodeFaults, regionFaults, type FaultOption } from '@/lib/faults';
+import { nodeFaults, regionFaults, workerFaults, zoneFaults, type FaultOption } from '@/lib/faults';
 import { SimRunner } from '@/sim/runner';
 
 type Mode = 'simulate' | 'replay' | 'live';
@@ -284,11 +284,16 @@ export default function App() {
                 highlightTp={highlight}
                 showControl={showControl}
                 onNodeClick={(n, at) => {
+                  if (n.kind === 'worker') {
+                    const w = view.workers[n.id];
+                    if (w) setMenu({ at, title: `k8s worker ${n.id}${mode !== 'simulate' ? ' (read-only)' : ''}`, options: mode === 'simulate' ? workerFaults(w) : [] });
+                    return;
+                  }
                   const nv = view.nodes[n.id];
                   if (!nv) return;
                   setMenu({ at, title: `${n.kind} ${n.id}${mode !== 'simulate' ? ' (read-only)' : ''}`, options: mode === 'simulate' ? nodeFaults(manifest, nv) : [] });
                 }}
-                onRegionClick={(r, at) => setMenu({ at, title: `region ${r}`, options: mode === 'simulate' ? regionFaults(manifest, r, view.partitioned) : [] })}
+                onRegionClick={(r, at) => setMenu({ at, title: `region ${r}`, options: mode === 'simulate' ? [...zoneFaults(manifest, r), ...regionFaults(manifest, r, view.partitioned)] : [] })}
               />
               <Legend />
             </div>
@@ -346,13 +351,14 @@ function Legend() {
   ] as const;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1.5 text-[10px] text-muted-foreground">
+      {/* k8s: wide boxes = worker nodes (dashed = cordoned, red = NotReady) */}
       {items.map(([c, l]) => (
         <span key={l} className="inline-flex items-center gap-1">
           <span className={`size-2 rounded-full ${c}`} aria-hidden />
           {l}
         </span>
       ))}
-      <span className="ml-auto">hexagon = controller · square = broker · circle = client · dashed = fenced · click to inject a fault</span>
+      <span className="ml-auto">hexagon = controller · square = broker · circle = client · wide box = k8s worker · dashed = fenced/cordoned · click to inject a fault</span>
     </div>
   );
 }

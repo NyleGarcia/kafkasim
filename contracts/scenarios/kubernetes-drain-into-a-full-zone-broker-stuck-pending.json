@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "name": "Kubernetes: drain into a full zone, broker stuck Pending",
+  "description": "us-east-1c has exactly three workers, one per Kafka pod, and no spare. At 10s the worker hosting b5 is cordoned and drained. Pod b5 gets a controlled shutdown: leadership moves first, so no unavailability. The StatefulSet recreates the pod, but its PVC is bound to us-east-1c and the only other worker there is full, so b5 sits Pending and its partitions stay under-replicated. Uncordoning at 60s lets b5 back onto its old node; it catches up and rejoins the ISR.",
+  "requiresConfluent": true,
+  "durationMs": 100000,
+  "regions": [
+    {
+      "id": "az1",
+      "name": "us-east-1a"
+    },
+    {
+      "id": "az2",
+      "name": "us-east-1b"
+    },
+    {
+      "id": "az3",
+      "name": "us-east-1c"
+    }
+  ],
+  "latency": {
+    "intraRegionMs": 0.5,
+    "interRegionMs": 1.5
+  },
+  "clusters": [
+    {
+      "id": "cfk",
+      "flavor": "confluent",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "az1"
+        },
+        {
+          "id": "c2",
+          "region": "az2"
+        },
+        {
+          "id": "c3",
+          "region": "az3"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "az1"
+        },
+        {
+          "id": "b2",
+          "region": "az1"
+        },
+        {
+          "id": "b3",
+          "region": "az2"
+        },
+        {
+          "id": "b4",
+          "region": "az2"
+        },
+        {
+          "id": "b5",
+          "region": "az3"
+        },
+        {
+          "id": "b6",
+          "region": "az3"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2,
+        "replicaLagTimeMaxMs": 10000
+      },
+      "platform": {
+        "type": "kubernetes",
+        "workers": [
+          {
+            "id": "w-az1-1",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-2",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-3",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az1-4",
+            "zone": "az1"
+          },
+          {
+            "id": "w-az2-1",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-2",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-3",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az2-4",
+            "zone": "az2"
+          },
+          {
+            "id": "w-az3-1",
+            "zone": "az3"
+          },
+          {
+            "id": "w-az3-2",
+            "zone": "az3"
+          },
+          {
+            "id": "w-az3-3",
+            "zone": "az3"
+          }
+        ],
+        "rackAwareness": true,
+        "storage": "zoneLocked",
+        "selfBalancing": {
+          "enabled": false
+        }
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "cfk",
+      "name": "payments",
+      "partitions": 3,
+      "replicationFactor": 3
+    }
+  ],
+  "producers": [
+    {
+      "id": "pos",
+      "cluster": "cfk",
+      "region": "az1",
+      "topic": "payments",
+      "acks": "all",
+      "ratePerSec": 30
+    }
+  ],
+  "actions": [
+    {
+      "type": "K8S_CORDON",
+      "at": 10000,
+      "target": "w-az3-2"
+    },
+    {
+      "type": "POD_DELETE",
+      "at": 10500,
+      "pod": "b5"
+    },
+    {
+      "type": "K8S_UNCORDON",
+      "at": 60000,
+      "target": "w-az3-2"
+    }
+  ]
+}

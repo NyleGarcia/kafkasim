@@ -38,6 +38,46 @@ export const ClusterConfig = z.object({
   replicaFetchWaitMaxMs: z.number().int().positive().default(500),
 });
 
+/** Kubernetes worker node. A manifest region is a k8s zone (topology.kubernetes.io/zone). */
+export const K8sWorker = z.object({
+  id: Id,
+  zone: Id,
+  /** false = cordoned / tainted NoSchedule for Kafka pods */
+  schedulable: z.boolean().default(true),
+  /** Kafka pods this worker can host (anti-affinity ⇒ usually 1) */
+  capacity: z.number().int().positive().default(1),
+});
+
+/**
+ * Optional platform: run the cluster on Kubernetes under an operator.
+ * Pods = StatefulSet ordinals (one per controller/broker), PVCs bound to a zone.
+ */
+export const Platform = z.object({
+  type: z.literal('kubernetes'),
+  operator: z.enum(['cfk']).default('cfk'),
+  workers: z.array(K8sWorker).min(1),
+  /** zoneLocked: RWO block volume (EBS/PD) pinned to its zone. ephemeral: log lost when the pod moves. */
+  storage: z.enum(['zoneLocked', 'ephemeral']).default('zoneLocked'),
+  /** broker.rack = zone (CFK rack awareness). Off ⇒ placement ignores zones. */
+  rackAwareness: z.boolean().default(true),
+  /** image start + JVM + log recovery before the broker is up */
+  podStartupMs: z.number().int().nonnegative().default(20_000),
+  /** node-monitor-grace-period: worker reported NotReady after this */
+  nodeNotReadyAfterMs: z.number().int().nonnegative().default(40_000),
+  /** SIGTERM → controlled shutdown → exit */
+  terminationGraceMs: z.number().int().nonnegative().default(5_000),
+  crashBackoffBaseMs: z.number().int().positive().default(10_000),
+  crashBackoffMaxMs: z.number().int().positive().default(300_000),
+  /** Confluent Self-Balancing Clusters: move replicas off a broker that stays failed. */
+  selfBalancing: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** confluent.balancer.heal.broker.failure.threshold.ms */
+      brokerFailureThresholdMs: z.number().int().positive().default(3_600_000),
+    })
+    .prefault({}),
+});
+
 export const Cluster = z.object({
   id: Id,
   name: z.string().optional(),
@@ -46,6 +86,7 @@ export const Cluster = z.object({
   controllers: z.array(z.object({ id: Id, region: Id })).min(1),
   brokers: z.array(z.object({ id: Id, region: Id, rack: z.string().optional() })).min(1),
   config: ClusterConfig.prefault({}),
+  platform: Platform.optional(),
 });
 
 export const Mirror = z.object({
@@ -135,6 +176,22 @@ export const Action = z.discriminatedUnion('type', [
   z.object({ type: z.literal('FAILOVER'), at: At, cluster: Id, topic: z.string() }),
   z.object({ type: z.literal('STOP_PRODUCER'), at: At, producer: Id }),
   z.object({ type: z.literal('START_PRODUCER'), at: At, producer: Id }),
+  // ---- Kubernetes (cluster.platform) ----
+  /** Worker crashes: its pods' processes die; StatefulSet pods stay stuck until the node returns or is deleted. */
+  z.object({ type: z.literal('K8S_NODE_FAIL'), at: At, worker: Id }),
+  z.object({ type: z.literal('K8S_NODE_RECOVER'), at: At, worker: Id }),
+  /** Node object deleted (or force-delete of its pods): StatefulSet can recreate the pods elsewhere. */
+  z.object({ type: z.literal('K8S_NODE_DELETE'), at: At, worker: Id }),
+  /** target = worker id or zone id */
+  z.object({ type: z.literal('K8S_CORDON'), at: At, target: Id }),
+  z.object({ type: z.literal('K8S_UNCORDON'), at: At, target: Id }),
+  /** kubectl delete pod / drain: graceful (controlled shutdown), then recreated and rescheduled */
+  z.object({ type: z.literal('POD_DELETE'), at: At, pod: Id }),
+  /** process crash: kubelet restarts the container in place with exponential backoff */
+  z.object({ type: z.literal('CONTAINER_CRASH'), at: At, pod: Id }),
+  /** every worker in the zone fails and the zone is cut off */
+  z.object({ type: z.literal('ZONE_OUTAGE'), at: At, zone: Id }),
+  z.object({ type: z.literal('ZONE_RECOVER'), at: At, zone: Id }),
 ]);
 
 // ---------------------------------------------------------------- manifest
@@ -212,6 +269,17 @@ export const SimEvent = z.discriminatedUnion('type', [
   z.object({ t: z.number(), type: z.literal('NETWORK'), partitioned: z.boolean(), groups: z.array(z.array(Id)).optional() }),
   z.object({ t: z.number(), type: z.literal('ACTION'), action: z.string(), detail: z.string() }),
   /** Human-readable explanation of something notable (shown in the event log). */
+  z.object({ t: z.number(), type: z.literal('K8S_NODE'), node: Id, zone: Id, ready: z.boolean(), schedulable: z.boolean() }),
+  z.object({
+    t: z.number(),
+    type: z.literal('POD'),
+    pod: Id,
+    phase: z.enum(['Pending', 'ContainerCreating', 'Running', 'Terminating', 'CrashLoopBackOff', 'Unknown']),
+    worker: Id.nullable(),
+    reason: z.string().optional(),
+  }),
+  /** Partition reassignment (e.g. Self-Balancing healing): new replica set. */
+  z.object({ t: z.number(), type: z.literal('REPLICAS_CHANGE'), tp: Tp, replicas: z.array(Id), observers: z.array(Id) }),
   z.object({ t: z.number(), type: z.literal('NOTE'), level: z.enum(['info', 'warn', 'error']), node: Id.optional(), message: z.string() }),
   /** A message on the wire — renderer only; never required for state. */
   z.object({
@@ -302,8 +370,29 @@ export function validateRefs(m: Manifest): void {
     if (!regions.has(p.region)) errs.push(`${p.id}: unknown region "${p.region}"`);
     if (!topics.has(`${p.cluster}/${p.topic}`)) errs.push(`${p.id}: unknown topic ${p.cluster}/${p.topic}`);
   }
+  const workers = new Map<string, string>(); // worker → zone
+  const pods = new Set<string>();
+  for (const c of m.clusters) {
+    if (!c.platform) continue;
+    if (c.flavor !== 'confluent') errs.push(`cluster ${c.id}: CFK runs Confluent Server — set flavor "confluent"`);
+    for (const w of c.platform.workers) {
+      if (workers.has(w.id) || nodes.has(w.id)) errs.push(`duplicate id "${w.id}" (worker)`);
+      workers.set(w.id, w.zone);
+      if (!regions.has(w.zone)) errs.push(`worker ${w.id}: unknown zone "${w.zone}"`);
+    }
+    for (const n of [...c.controllers, ...c.brokers]) pods.add(n.id);
+    try {
+      initialPlacement(c);
+    } catch (e) {
+      errs.push(`cluster ${c.id}: ${(e as Error).message}`);
+    }
+  }
   for (const a of m.actions) {
     if ('node' in a && !nodes.has(a.node)) errs.push(`action ${a.type}@${a.at}: unknown node "${a.node}"`);
+    if ('worker' in a && !workers.has(a.worker)) errs.push(`action ${a.type}@${a.at}: unknown worker "${a.worker}"`);
+    if ('pod' in a && !pods.has(a.pod)) errs.push(`action ${a.type}@${a.at}: "${a.pod}" is not a Kubernetes pod`);
+    if ('target' in a && !workers.has(a.target) && !regions.has(a.target)) errs.push(`action ${a.type}@${a.at}: unknown worker/zone "${a.target}"`);
+    if ('zone' in a && !regions.has(a.zone)) errs.push(`action ${a.type}@${a.at}: unknown zone "${a.zone}"`);
     if (a.type === 'PARTITION')
       for (const g of a.groups) for (const x of g) if (!regions.has(x) && !nodes.has(x)) errs.push(`PARTITION: unknown "${x}"`);
   }
@@ -313,7 +402,8 @@ export function validateRefs(m: Manifest): void {
 /** Replica placement when `replicas` is omitted: rack/region-interleaved round robin (rack-aware). */
 export function assignReplicas(cluster: ClusterT, topic: TopicT): string[][] {
   const by = new Map<string, string[]>();
-  for (const b of cluster.brokers) by.set(b.rack ?? b.region, [...(by.get(b.rack ?? b.region) ?? []), b.id]);
+  const rackOf = (b: ClusterT['brokers'][number]) => (cluster.platform ? (cluster.platform.rackAwareness ? b.region : 'none') : (b.rack ?? b.region));
+  for (const b of cluster.brokers) by.set(rackOf(b), [...(by.get(rackOf(b)) ?? []), b.id]);
   const lists = [...by.values()];
   const order: string[] = [];
   for (let i = 0; order.length < cluster.brokers.length; i++) for (const l of lists) if (l[i]) order.push(l[i]!);
@@ -333,3 +423,22 @@ export const BridgeFrame = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('error'), message: z.string() }),
 ]);
 export type BridgeFrame = z.output<typeof BridgeFrame>;
+
+/**
+ * Initial pod → worker placement for a Kubernetes cluster: each controller/broker
+ * pod goes to a schedulable worker in its own zone with free capacity (in order).
+ * Throws when a zone can't host its pods (reported as a manifest error).
+ */
+export function initialPlacement(cluster: ClusterT): Map<string, string> {
+  const out = new Map<string, string>();
+  const p = cluster.platform;
+  if (!p) return out;
+  const load = new Map<string, number>();
+  for (const n of [...cluster.controllers, ...cluster.brokers]) {
+    const w = p.workers.find((w) => w.zone === n.region && w.schedulable && (load.get(w.id) ?? 0) < w.capacity);
+    if (!w) throw new Error(`pod ${n.id}: no schedulable worker with free capacity in zone ${n.region}`);
+    load.set(w.id, (load.get(w.id) ?? 0) + 1);
+    out.set(n.id, w.id);
+  }
+  return out;
+}

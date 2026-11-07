@@ -92,7 +92,8 @@ function drawCluster(ctx: CanvasRenderingContext2D, c: Layout['clusters'][number
   const ctl = v.controllers[c.cluster];
   ctx.textAlign = 'right';
   ctx.fillStyle = ctl?.node ? C.muted : C.critical;
-  ctx.fillText(ctl?.node ? `kraft epoch ${ctl.epoch}` : 'NO ACTIVE CONTROLLER', c.x + c.w - 8, c.y + 11);
+  const narrow = c.w < 200;
+  ctx.fillText(ctl?.node ? (narrow ? `e${ctl.epoch}` : `kraft epoch ${ctl.epoch}`) : narrow ? 'NO CTRL' : 'NO ACTIVE CONTROLLER', c.x + c.w - 8, c.y + 11);
   if (c.flavor === 'confluent') {
     ctx.fillStyle = C.observer;
     ctx.textAlign = 'left';
@@ -160,7 +161,45 @@ function drawMessages(ctx: CanvasRenderingContext2D, L: Layout, msgs: Msg[], o: 
   }
 }
 
+function drawWorker(ctx: CanvasRenderingContext2D, n: NodeBox, v: ViewState, o: RenderOpts) {
+  const w = v.workers[n.id];
+  if (!w) return;
+  const pods = Object.values(v.nodes).filter((x) => x.pod?.worker === n.id);
+  const tone = !w.ready ? C.critical : !w.schedulable ? C.warning : C.muted;
+  const wdt = n.r * 3.2;
+  const h = n.r * 1.5;
+  ctx.save();
+  ctx.lineWidth = o.hover === n.id ? 2 : 1;
+  ctx.strokeStyle = tone;
+  ctx.fillStyle = !w.ready ? 'rgba(239,68,68,0.10)' : '#0b1222';
+  ctx.setLineDash(w.schedulable ? [] : [4, 3]);
+  roundRect(ctx, n.x - wdt / 2, n.y - h / 2, wdt, h, 4);
+  ctx.fill();
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = '9px "JetBrains Mono Variable", monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = tone === C.muted ? C.text : tone;
+  ctx.fillText(n.id.replace(/^w-/, ''), n.x, n.y - 4);
+  ctx.fillStyle = C.muted;
+  ctx.fillText(pods.length ? pods.map((p) => p.id).join(' ') : 'empty', n.x, n.y + 6);
+  ctx.fillStyle = tone;
+  const sub = !w.ready ? 'NotReady' : !w.schedulable ? 'cordoned' : '';
+  if (sub) ctx.fillText(sub, n.x, n.y + h / 2 + 8);
+  ctx.restore();
+}
+
+const POD_TONE: Record<string, string> = {
+  Pending: C.warning,
+  ContainerCreating: C.info,
+  CrashLoopBackOff: C.critical,
+  Terminating: C.warning,
+  Unknown: C.critical,
+};
+
 function drawNode(ctx: CanvasRenderingContext2D, n: NodeBox, v: ViewState, o: RenderOpts, hl?: PartitionView) {
+  if (n.kind === 'worker') return drawWorker(ctx, n, v, o);
   const nv = v.nodes[n.id];
   if (!nv) return;
   const status = nv.status;
@@ -228,14 +267,16 @@ function drawNode(ctx: CanvasRenderingContext2D, n: NodeBox, v: ViewState, o: Re
   ctx.font = '9px "JetBrains Mono Variable", monospace';
   ctx.fillStyle = C.muted;
   let sub = '';
-  if (status !== 'running') sub = status === 'dead' ? 'DEAD' : 'PAUSED';
+  const phase = nv.pod && nv.pod.phase !== 'Running' ? nv.pod.phase : null;
+  if (phase) sub = phase === 'ContainerCreating' ? 'STARTING' : phase === 'CrashLoopBackOff' ? 'CRASHLOOP' : phase.toUpperCase();
+  else if (status !== 'running') sub = status === 'dead' ? 'DEAD' : 'PAUSED';
   else if (nv.fenced) sub = 'FENCED';
   else if (n.kind === 'broker') {
     const led = Object.values(v.partitions).filter((p) => p.leader === n.id).length;
     sub = led ? `leads ${led}` : '';
   } else if (n.kind === 'controller') sub = nv.activeController ? 'ACTIVE' : '';
   if (sub) {
-    ctx.fillStyle = status === 'dead' ? C.critical : status === 'paused' || nv.fenced ? C.warning : nv.activeController ? C.observer : C.muted;
+    ctx.fillStyle = phase ? POD_TONE[phase]! : status === 'dead' ? C.critical : status === 'paused' || nv.fenced ? C.warning : nv.activeController ? C.observer : C.muted;
     ctx.fillText(sub, n.x, n.y + n.r + (isClient ? 21 : 10));
   }
   if (hl && inHl && n.kind === 'broker') {

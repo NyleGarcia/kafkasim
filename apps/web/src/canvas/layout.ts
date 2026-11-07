@@ -1,6 +1,6 @@
 import type { Manifest } from '@kafkasim/engine';
 
-export type NodeKind = 'broker' | 'controller' | 'producer' | 'consumer' | 'mm2';
+export type NodeKind = 'broker' | 'controller' | 'producer' | 'consumer' | 'mm2' | 'worker';
 
 export interface NodeBox {
   id: string;
@@ -78,9 +78,10 @@ export function computeLayout(m: Manifest, width: number): Layout {
       const ctl = c.controllers.filter((x) => x.region === col.id);
       const brk = c.brokers.filter((x) => x.region === col.id);
       const cli = clients.get(`${c.id}|${col.id}`) ?? [];
+      const wrk = c.platform?.workers.filter((w) => w.zone === col.id) ?? [];
       // clients of a cluster in a region where it has no servers still need a block
-      if (!ctl.length && !brk.length && !cli.length) continue;
-      const rows = [ctl, brk, cli].filter((r) => r.length);
+      if (!ctl.length && !brk.length && !cli.length && !wrk.length) continue;
+      const rows = [ctl, brk, cli, wrk].filter((r) => r.length);
       const h = CLUSTER_HEADER + rows.length * ROW + 6;
       clusters.push({ cluster: c.id, region: col.id, x: col.x, y, w: col.w, h, hue: hueOf.get(c.id)!, flavor: c.flavor });
       let ry = y + CLUSTER_HEADER + ROW / 2;
@@ -90,7 +91,7 @@ export function computeLayout(m: Manifest, width: number): Layout {
         const r = Math.min(20, step / 2.6);
         items.forEach((it, i) => {
           const k = typeof kind === 'function' ? kind(it.id) : kind;
-          nodes.set(it.id, { id: it.id, kind: k, cluster: c.id, region: col.id, x: col.x + step * (i + 1), y: ry, r: k === 'controller' ? r * 0.8 : k === 'broker' ? r : r * 0.75 });
+          nodes.set(it.id, { id: it.id, kind: k, cluster: c.id, region: col.id, x: col.x + step * (i + 1), y: ry, r: k === 'controller' ? r * 0.8 : k === 'broker' ? r : k === 'worker' ? Math.min(14, step * 0.28) : r * 0.75 });
         });
         ry += ROW;
       };
@@ -98,6 +99,7 @@ export function computeLayout(m: Manifest, width: number): Layout {
       place(brk, 'broker');
       const kinds = new Map(cli.map((x) => [x.id, x.kind]));
       place(cli, (id) => kinds.get(id)!);
+      place(wrk, 'worker');
       y += h + CLUSTER_GAP;
     }
     maxY = Math.max(maxY, y);

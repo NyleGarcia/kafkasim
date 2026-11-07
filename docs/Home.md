@@ -20,4 +20,6 @@ updated: 2026-11-07
 
 ## Plans
 - [[plans/README]] — ([open](plans/README.md)) — now / next / later / specs
+- [[specs/kafkasim-mvp]] — ([open](plans/specs/kafkasim-mvp.md)) — MVP spec
+- [[specs/k8s-cfk]] — ([open](plans/specs/k8s-cfk.md)) — Kubernetes / CFK layer spec
 - [[changelog]] — ([open](changelog.md))

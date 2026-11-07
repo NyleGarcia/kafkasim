@@ -42,8 +42,21 @@ export function describe(e: SimEvent): Described | null {
       return { level: e.partitioned ? 'warn' : 'success', source: 'network', text: e.partitioned ? `partitioned: ${(e.groups ?? []).map((g) => `[${g.join(' ')}]`).join(' | ')}` : 'healed' };
     case 'ACTION':
       return { level: 'info', source: 'action', text: e.action.replace(/_/g, ' ').toLowerCase() + ' ' + actionTarget(e.detail) };
+    case 'K8S_NODE':
+      return { level: e.ready ? (e.schedulable ? 'success' : 'warn') : 'error', source: e.node, text: `worker ${e.ready ? 'Ready' : 'NotReady'}${e.schedulable ? '' : ', unschedulable'}` };
+    case 'POD':
+      if (e.t === 0) return null;
+      return {
+        level: e.phase === 'Running' ? 'success' : e.phase === 'Pending' || e.phase === 'Terminating' ? 'warn' : e.phase === 'ContainerCreating' ? 'info' : 'error',
+        source: `pod/${e.pod}`,
+        text: `${e.phase}${e.worker ? ` on ${e.worker}` : ''}${e.reason ? ` — ${e.reason}` : ''}`,
+      };
+    case 'REPLICAS_CHANGE':
+      return { level: 'info', source: e.tp, text: `replicas → [${e.replicas.join(', ')}]` };
     case 'NOTE':
-      return e.level === 'info' ? { level: 'info', source: e.node ?? 'note', text: e.message } : null; // warn/error notes duplicate structured events
+      // warn/error notes mostly duplicate structured events; platform notes don't
+      if (e.level === 'info' || /Self-Balancing|NotReady|stuck/.test(e.message)) return { level: e.level, source: e.node ?? 'note', text: e.message };
+      return null;
     default:
       return null;
   }

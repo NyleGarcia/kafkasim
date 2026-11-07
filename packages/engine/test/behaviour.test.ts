@@ -238,3 +238,95 @@ describe('MRC observers', () => {
     expect(end.partitions['mrc/payments/0']!.isr.sort()).toEqual(['e1', 'e2']);
   });
 });
+
+describe('Kubernetes / CFK platform', () => {
+  const pods = (evs: SimEvent[], pod: string) => of(evs, 'POD').filter((e) => e.pod === pod);
+
+  it('rejects CFK on an apache-flavor cluster and zones that cannot host their pods', () => {
+    const bad = byName('CFK: broker container crash');
+    bad.clusters[0]!.flavor = 'apache';
+    expect(() => parseManifest(bad)).toThrow(/CFK runs Confluent Server/);
+    const full = byName('CFK: broker container crash');
+    full.clusters[0]!.platform!.workers = full.clusters[0]!.platform!.workers.filter((w) => w.zone !== 'az3');
+    expect(() => parseManifest(full)).toThrow(/no schedulable worker with free capacity in zone az3/);
+  });
+
+  it('rack awareness: RF=3 placement puts one replica per zone', () => {
+    const m = parseManifest(byName('CFK: AZ outage'));
+    const zone = (b: string) => m.clusters[0]!.brokers.find((x) => x.id === b)!.region;
+    const v = viewAt(buildTimeline(m, simulate(m, { untilMs: 1 }).events, 1), 0);
+    for (const p of Object.values(v.partitions)) expect(new Set(p.replicas.map(zone)).size).toBe(3);
+  });
+
+  it('container crash: kubelet restarts in place, then CrashLoopBackOff with doubling back-off; log survives', () => {
+    const r = run(byName('CFK: broker container crash'));
+    const ph = pods(r.events, 'b1').map((e) => e.phase);
+    expect(ph.filter((p) => p === 'CrashLoopBackOff')).toHaveLength(2);
+    const back = pods(r.events, 'b1').filter((e) => e.phase === 'CrashLoopBackOff').map((e) => e.reason);
+    expect(back).toEqual(['restart 2: back-off 10s', 'restart 3: back-off 20s']);
+    expect(of(r.events, 'TRUNCATE').filter((e) => e.node === 'b1' && e.to === 0)).toHaveLength(0); // PVC kept the log
+    // back after the 2nd restart (Running at 80s) and in sync before the 3rd crash at 85s
+    const mid = viewAt(buildTimeline(r.m, r.events, r.endT), 84_000);
+    const hosted = Object.values(mid.partitions).filter((p) => p.replicas.includes('b1'));
+    expect(hosted.length).toBeGreaterThan(0);
+    for (const p of hosted) expect(p.isr).toContain('b1');
+    expect(of(r.events, 'DATA_LOSS')).toHaveLength(0);
+  });
+
+  it('worker failure: StatefulSet pods stay stuck (Unknown), never rescheduled while the node is unreachable', () => {
+    const r = run(byName('CFK: AZ outage'));
+    const b1 = pods(r.events, 'b1');
+    expect(b1.find((e) => e.phase === 'Unknown')!.t).toBeCloseTo(10_000 + 40_000, -2); // nodeNotReadyAfterMs
+    expect(b1.filter((e) => e.t > 10_000 && e.t < 120_000).some((e) => e.phase === 'Pending' || e.phase === 'ContainerCreating')).toBe(false);
+  });
+
+  it('AZ outage with rack awareness: partitions stay online; Self-Balancing restores RF without the dead zone', () => {
+    const r = run(byName('CFK: AZ outage'));
+    expect(of(r.events, 'LEADER_CHANGE').filter((e) => e.t > 0 && e.leader === null)).toHaveLength(0);
+    const tl = buildTimeline(r.m, r.events, r.endT);
+    const healed = viewAt(tl, 110_000);
+    for (const p of Object.values(healed.partitions)) {
+      expect(p.replicas).toHaveLength(3);
+      expect(p.replicas.some((b) => b === 'b1' || b === 'b2')).toBe(false);
+      expect(p.isr).toHaveLength(3);
+    }
+    expect(sum(of(r.events, 'PRODUCE_ACK').filter((e) => e.t > 30_000 && e.t < 110_000))).toBeGreaterThan(2_500);
+    expect(of(r.events, 'DATA_LOSS')).toHaveLength(0);
+  });
+
+  it('rack awareness off: the same outage takes co-located partitions offline', () => {
+    const r = run(byName('Kubernetes: rack awareness off'));
+    expect(of(r.events, 'LEADER_CHANGE').some((e) => e.leader === null)).toBe(true);
+    const on = byName('Kubernetes: rack awareness off');
+    on.clusters[0]!.platform!.rackAwareness = true;
+    expect(of(run(on).events, 'LEADER_CHANGE').some((e) => e.leader === null)).toBe(false);
+  });
+
+  it('drain into a full zone: controlled shutdown (no lost acks), pod Pending on its zone-locked PVC until uncordon', () => {
+    const r = run(byName('Kubernetes: drain'));
+    expect(of(r.events, 'BROKER_FENCE').find((e) => e.node === 'b5')!.reason).toBe('controlled shutdown');
+    const pend = pods(r.events, 'b5').filter((e) => e.phase === 'Pending');
+    expect(pend.at(-1)!.reason).toMatch(/PVC is bound to az3/);
+    const sched = pods(r.events, 'b5').find((e) => e.phase === 'ContainerCreating')!;
+    expect(sched.t).toBeGreaterThanOrEqual(60_000);
+    expect(of(r.events, 'PRODUCE_ERROR').filter((e) => !e.retriable)).toHaveLength(0);
+    expect(of(r.events, 'DATA_LOSS')).toHaveLength(0);
+  });
+
+  it('KILL_NODE on a pod is a container crash: Kubernetes heals it', () => {
+    const s = byName('CFK: broker container crash');
+    s.actions = [{ type: 'KILL_NODE', at: 10_000, node: 'b3' }];
+    const r = run(s);
+    expect(pods(r.events, 'b3').some((e) => e.phase === 'Running' && e.t > 10_000)).toBe(true);
+    expect(of(r.events, 'NODE_STATUS').filter((e) => e.node === 'b3').map((e) => e.status)).toEqual(['dead', 'running']);
+  });
+
+  it('ephemeral storage: a rescheduled pod starts empty and re-replicates', () => {
+    const s = byName('Kubernetes: drain');
+    s.clusters[0]!.platform!.storage = 'ephemeral';
+    const r = run(s);
+    expect(of(r.events, 'TRUNCATE').some((e) => e.node === 'b5' && e.to === 0)).toBe(true);
+    const end = viewAt(buildTimeline(r.m, r.events, r.endT), r.endT);
+    expect(end.partitions['cfk/payments/0']!.isr).toContain('b5');
+  });
+});

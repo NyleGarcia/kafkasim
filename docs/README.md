@@ -19,4 +19,4 @@ updated: 2026-11-07
 - [Hybrid sim + replay + live](decisions/hybrid-sim-replay-live.md)
 
 ## Plans
-- [Plans index](plans/README.md) · [Changelog](changelog.md)
+- [Plans index](plans/README.md) · [MVP spec](plans/specs/kafkasim-mvp.md) · [Kubernetes/CFK spec](plans/specs/k8s-cfk.md) · [Changelog](changelog.md)

@@ -591,6 +591,133 @@
         },
         "type": {
           "type": "string",
+          "const": "K8S_NODE"
+        },
+        "node": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+$"
+        },
+        "zone": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+$"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "schedulable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "t",
+        "type",
+        "node",
+        "zone",
+        "ready",
+        "schedulable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "t": {
+          "type": "number"
+        },
+        "type": {
+          "type": "string",
+          "const": "POD"
+        },
+        "pod": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+$"
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "Pending",
+            "ContainerCreating",
+            "Running",
+            "Terminating",
+            "CrashLoopBackOff",
+            "Unknown"
+          ]
+        },
+        "worker": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "type",
+        "pod",
+        "phase",
+        "worker"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "t": {
+          "type": "number"
+        },
+        "type": {
+          "type": "string",
+          "const": "REPLICAS_CHANGE"
+        },
+        "tp": {
+          "type": "string"
+        },
+        "replicas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          }
+        },
+        "observers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "type",
+        "tp",
+        "replicas",
+        "observers"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "t": {
+          "type": "number"
+        },
+        "type": {
+          "type": "string",
           "const": "NOTE"
         },
         "level": {
