@@ -1,1 +1,18 @@
-[]
+[
+  {
+    "file": "single-cluster-broker-failure.real.json",
+    "name": "Single cluster: broker failure \u2014 real Kafka 4.2"
+  },
+  {
+    "file": "min-insync-replicas-not-enough-replicas.real.json",
+    "name": "min.insync.replicas: NOT_ENOUGH_REPLICAS \u2014 real Kafka 4.2"
+  },
+  {
+    "file": "zombie-leader-sigstop.real.json",
+    "name": "Zombie leader (SIGSTOP) \u2014 real Kafka 4.2"
+  },
+  {
+    "file": "unclean-leader-election.real.json",
+    "name": "Unclean leader election \u2014 real Kafka 4.2"
+  }
+]

@@ -31,7 +31,7 @@ Consumer-group rebalancing, transactions, retention and compaction, keyed partit
 - [x] `npm test`: engine behaviour suite (35) + web unit tests green.
 - [x] bridge + harness pytest green; bridge output validates against the zod schemas.
 - [x] Pages build; Simulate, Replay and Live verified headless (Playwright), no console errors.
-- [ ] Calibration job green on GitHub Actions for gating outcomes.
+- [x] Calibration job green on GitHub Actions for gating outcomes (2026-11-07).
 
 ## Changes vs the Gemini draft
 

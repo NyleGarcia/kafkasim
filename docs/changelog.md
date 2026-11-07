@@ -6,6 +6,12 @@ updated: 2026-11-07
 
 # Changelog
 
+## Unreleased
+
+- Scenario builder: visual editor for regions and latency, clusters (KRaft config, controllers and brokers per region), multiple topics (RF or per-partition placement, observers, MM2 / Cluster Linking mirrors), producers, consumers and timed faults. It has a live preview, validation through the engine parser, and JSON as an advanced tab.
+- Calibration green on real Kafka 4.2 (broker failure, min.insync, zombie leader). Real-Kafka recordings now ship in Replay.
+- Engine fidelity: Kafka default timeouts, connection reset on SIGKILL, KIP-794 adaptive partitioning, acking of committed idempotent duplicates.
+
 ## 0.1.0 — 2026-11-07
 
 - Engine: deterministic KRaft/replication model.

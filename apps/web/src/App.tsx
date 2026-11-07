@@ -1,10 +1,9 @@
 import { parseManifest, scenarios, viewAt, type ActionT, type Manifest, type Timeline } from '@kafkasim/engine';
-import { Code2, Download, FileJson, Undo2 } from 'lucide-react';
+import { Code2, Download, FilePlus2, SlidersHorizontal, Undo2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { EventLog } from '@/components/EventLog';
 import { FaultMenu } from '@/components/FaultMenu';
-import { ManifestDialog } from '@/components/ManifestDialog';
 import { MetricsPanel } from '@/components/MetricsPanel';
 import { NodesPanel } from '@/components/NodesPanel';
 import { PartitionTable } from '@/components/PartitionTable';
@@ -16,6 +15,8 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { ScenarioBuilder } from '@/builder/ScenarioBuilder';
+import { blankDraft } from '@/builder/draft';
 import { useLiveBridge } from '@/hooks/useLiveBridge';
 import { usePlayback } from '@/hooks/usePlayback';
 import { nodeFaults, regionFaults, type FaultOption } from '@/lib/faults';
@@ -41,7 +42,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [replayError, setReplayError] = useState<string | null>(null);
   const [recordings, setRecordings] = useState<{ file: string; name: string }[]>([]);
-  const [editOpen, setEditOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState<null | 'edit' | 'new'>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [showControl, setShowControl] = useState(true);
   const [menu, setMenu] = useState<{ at: { x: number; y: number }; title: string; options: FaultOption[] } | null>(null);
@@ -211,8 +212,11 @@ export default function App() {
                 {custom !== null && <SelectItem value="custom">Custom manifest</SelectItem>}
               </SelectContent>
             </Select>
-            <Button size="sm" variant="outline" onClick={() => setEditOpen(true)}>
-              <FileJson /> Edit
+            <Button size="sm" variant="outline" onClick={() => setEditOpen('edit')}>
+              <SlidersHorizontal /> Edit scenario
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditOpen('new')}>
+              <FilePlus2 /> New
             </Button>
             {extra.length > 0 && (
               <Button size="sm" variant="ghost" onClick={() => setExtra([])}>
@@ -312,15 +316,15 @@ export default function App() {
       )}
 
       {menu && <FaultMenu open at={menu.at} title={menu.title} options={menu.options} onPick={inject} onClose={() => setMenu(null)} />}
-      <ManifestDialog
-        open={editOpen}
-        onOpenChange={setEditOpen}
-        initial={parsedInput ? input : SCENARIOS[0]!.input}
-        onApply={(m) => {
+      <ScenarioBuilder
+        open={editOpen !== null}
+        onOpenChange={(o) => !o && setEditOpen(null)}
+        initial={editOpen === 'new' ? blankDraft() : parsedInput ? input : SCENARIOS[0]!.input}
+        onRun={(m) => {
           setCustom(m);
           setExtra([]);
-          pb.seek(0);
-          pb.setPlaying(true);
+          seek(0);
+          setPlaying(true);
         }}
       />
       <footer className="pb-2 text-center text-[11px] text-muted-foreground">
