@@ -1,0 +1,34 @@
+name: calibrate
+# Real Apache Kafka 4.2 in Docker vs the simulator (outcome-level). Nightly + on demand.
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'space-separated scenario slugs (default: all calibrated)'
+        required: false
+permissions:
+  contents: read
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: astral-sh/setup-uv@v6
+      - run: docker pull apache/kafka:4.2.0
+      - name: calibrate
+        working-directory: harness
+        run: uv run kafkasim-harness calibrate ${{ inputs.only && format('--only {0}', inputs.only) || '' }}
+      - name: recordings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-kafka-recordings
+          path: apps/web/public/replays/

@@ -1,0 +1,22 @@
+{
+  "name": "kafkasim",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w web",
+    "build": "npm run build -w @kafkasim/engine && npm run build -w web",
+    "test": "npm test -w @kafkasim/engine && npm test -w web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  },
+  "devDependencies": {
+    "vite": "^8.3.6"
+  }
+}

@@ -1,0 +1,51 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run schema:check -w @kafkasim/engine
+      - run: npm run typecheck -w @kafkasim/engine
+      - run: npm test -w @kafkasim/engine
+      - run: npm run typecheck -w web
+      - run: npm test -w web
+      - run: npx oxlint apps/web/src
+      - run: npm run build -w web
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: astral-sh/setup-uv@v6
+      - name: bridge
+        working-directory: bridge
+        run: |
+          uv run ruff check . && uv run ruff format --check .
+          KAFKASIM_CONTRACT_OUT=$RUNNER_TEMP/contract uv run pytest -q
+      - name: bridge output validates against the zod contracts
+        run: npx tsx packages/engine/scripts/validate.ts $RUNNER_TEMP/contract/bridge-frames.json $RUNNER_TEMP/contract/bridge-recording.json
+      - name: harness
+        working-directory: harness
+        run: |
+          uv run ruff check . && uv run ruff format --check .
+          uv run pytest -q
+      - name: docs frontmatter
+        run: uv run --no-project python scripts/obsidian_frontmatter.py --check

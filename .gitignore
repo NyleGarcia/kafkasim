@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.tmp/
+tmp/
+scratch/
+.env
+.venv/
+__pycache__/
+*.pyc
+**/.obsidian/
+test-results/
+playwright-report/
+harness/recordings/*.raw.jsonl
+.claude/settings.local.json

@@ -1,0 +1,335 @@
+/**
+ * Contracts — single source of truth for the scenario manifest and the event log.
+ *
+ * Emitted to /contracts/*.schema.json (see scripts/emit-schema.ts) so the Python
+ * bridge/harness consume the same shapes. Every producer of events (TS engine,
+ * real-Kafka recorder, live bridge) speaks `SimEvent`; every consumer (renderer,
+ * calibration diff) reduces `SimEvent`s with `reduceEvent`.
+ */
+import { z } from 'zod';
+
+export const SCHEMA_VERSION = 1 as const;
+
+const Id = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/, 'ids: [A-Za-z0-9_.-]');
+
+// ---------------------------------------------------------------- topology
+
+export const Region = z.object({
+  id: Id,
+  name: z.string().optional(),
+});
+
+export const ClusterConfig = z.object({
+  /** replica.lag.time.max.ms — follower not caught up for this long leaves ISR. */
+  replicaLagTimeMaxMs: z.number().int().positive().default(30_000),
+  /** min.insync.replicas (cluster default; topic may override). */
+  minInsyncReplicas: z.number().int().positive().default(1),
+  /** unclean.leader.election.enable */
+  uncleanLeaderElection: z.boolean().default(false),
+  /** broker.heartbeat.interval.ms */
+  brokerHeartbeatIntervalMs: z.number().int().positive().default(2_000),
+  /** broker.session.timeout.ms */
+  brokerSessionTimeoutMs: z.number().int().positive().default(9_000),
+  /** controller.quorum.fetch.timeout.ms — follower controllers start election after this. */
+  quorumFetchTimeoutMs: z.number().int().positive().default(2_000),
+  /** controller.quorum.election.timeout.ms (base; randomized up to 2x). */
+  quorumElectionTimeoutMs: z.number().int().positive().default(1_000),
+  /** replica.fetch.wait.max.ms — long-poll; sim uses it as follower fetch cadence. */
+  replicaFetchWaitMaxMs: z.number().int().positive().default(500),
+});
+
+export const Cluster = z.object({
+  id: Id,
+  name: z.string().optional(),
+  /** Confluent-only behaviour is gated on this. */
+  flavor: z.enum(['apache', 'confluent']).default('apache'),
+  controllers: z.array(z.object({ id: Id, region: Id })).min(1),
+  brokers: z.array(z.object({ id: Id, region: Id, rack: z.string().optional() })).min(1),
+  config: ClusterConfig.prefault({}),
+});
+
+export const Mirror = z.object({
+  /** cluster_link: Confluent Cluster Linking (byte-for-byte, offsets preserved).
+   *  mm2: Apache MirrorMaker 2 (consume+produce, offsets translated). */
+  type: z.enum(['cluster_link', 'mm2']),
+  sourceCluster: Id,
+  sourceTopic: z.string().min(1),
+  /** MM2 only: region where the Connect worker runs (defaults to first dest broker's region). */
+  workerRegion: Id.optional(),
+  /** Poll cadence of the mirror fetcher / MM2 consumer. */
+  fetchIntervalMs: z.number().int().positive().default(500),
+});
+
+export const Topic = z.object({
+  cluster: Id,
+  name: z.string().min(1),
+  partitions: z.number().int().positive().default(1),
+  /** Explicit assignment per partition: sync replicas (first = preferred leader). */
+  replicas: z.array(z.array(Id).min(1)).optional(),
+  /** Used when `replicas` omitted: rack/region-aware round robin. */
+  replicationFactor: z.number().int().positive().optional(),
+  /** Confluent MRC observers per partition (async, never in ISR unless promoted). */
+  observers: z.array(z.array(Id)).optional(),
+  /** Confluent MRC: promote observers when ISR < min.insync. */
+  observerPromotionPolicy: z.enum(['none', 'under-min-isr']).default('none'),
+  minInsyncReplicas: z.number().int().positive().optional(),
+  mirror: Mirror.optional(),
+});
+
+export const Producer = z.object({
+  id: Id,
+  cluster: Id,
+  region: Id,
+  topic: z.string().min(1),
+  acks: z.union([z.literal(0), z.literal(1), z.literal('all')]).default('all'),
+  /** Records per second (deterministic spacing). */
+  ratePerSec: z.number().positive().default(10),
+  lingerMs: z.number().int().nonnegative().default(5),
+  /** batch.size expressed in records (sim abstraction of bytes). */
+  batchSize: z.number().int().positive().default(16),
+  enableIdempotence: z.boolean().default(true),
+  /** request.timeout.ms */
+  requestTimeoutMs: z.number().int().positive().default(30_000),
+  /** delivery.timeout.ms — total time a record may spend retrying. */
+  deliveryTimeoutMs: z.number().int().positive().default(120_000),
+  retryBackoffMs: z.number().int().nonnegative().default(100),
+  startMs: z.number().int().nonnegative().default(0),
+  stopMs: z.number().int().nonnegative().optional(),
+});
+
+export const Consumer = z.object({
+  id: Id,
+  cluster: Id,
+  region: Id,
+  group: z.string().min(1),
+  topic: z.string().min(1),
+  pollIntervalMs: z.number().int().positive().default(200),
+  maxPollRecords: z.number().int().positive().default(500),
+  startMs: z.number().int().nonnegative().default(0),
+});
+
+export const LatencyLink = z.object({ a: Id, b: Id, ms: z.number().nonnegative() });
+
+// ---------------------------------------------------------------- actions
+
+const At = z.number().int().nonnegative();
+
+export const Action = z.discriminatedUnion('type', [
+  /** Hard crash (SIGKILL). Log survives on disk, process state lost. */
+  z.object({ type: z.literal('KILL_NODE'), at: At, node: Id }),
+  /** Restart a killed node. */
+  z.object({ type: z.literal('RESTART_NODE'), at: At, node: Id }),
+  /** SIGSTOP — zombie: holds sockets, does no work, wakes up stale. */
+  z.object({ type: z.literal('PAUSE_NODE'), at: At, node: Id }),
+  z.object({ type: z.literal('RESUME_NODE'), at: At, node: Id }),
+  /** Network partition: nodes/regions in different groups cannot talk. Unlisted nodes join group 0. */
+  z.object({
+    type: z.literal('PARTITION'),
+    at: At,
+    /** Each group is a list of region ids or node ids. */
+    groups: z.array(z.array(Id).min(1)).min(2),
+  }),
+  z.object({ type: z.literal('HEAL'), at: At }),
+  z.object({ type: z.literal('SET_LATENCY'), at: At, a: Id, b: Id, ms: z.number().nonnegative() }),
+  /** Promote a mirror topic to writable (Cluster Linking failover / MM2 cutover). */
+  z.object({ type: z.literal('FAILOVER'), at: At, cluster: Id, topic: z.string() }),
+  z.object({ type: z.literal('STOP_PRODUCER'), at: At, producer: Id }),
+  z.object({ type: z.literal('START_PRODUCER'), at: At, producer: Id }),
+]);
+
+// ---------------------------------------------------------------- manifest
+
+export const Manifest = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION),
+  name: z.string().min(1),
+  description: z.string().default(''),
+  /** Scenario needs Confluent Platform features (shown as a badge). */
+  requiresConfluent: z.boolean().default(false),
+  seed: z.number().int().default(1),
+  durationMs: z.number().int().positive().default(60_000),
+  regions: z.array(Region).min(1),
+  latency: z
+    .object({
+      intraRegionMs: z.number().nonnegative().default(1),
+      /** Default between regions not listed in `links`. */
+      interRegionMs: z.number().nonnegative().default(30),
+      /** +/- uniform jitter fraction applied per message. */
+      jitter: z.number().min(0).max(1).default(0.1),
+      links: z.array(LatencyLink).default([]),
+    })
+    .prefault({}),
+  clusters: z.array(Cluster).min(1),
+  topics: z.array(Topic).default([]),
+  producers: z.array(Producer).default([]),
+  consumers: z.array(Consumer).default([]),
+  actions: z.array(Action).default([]),
+});
+
+export type ManifestInput = z.input<typeof Manifest>;
+export type Manifest = z.output<typeof Manifest>;
+export type ClusterT = z.output<typeof Cluster>;
+export type TopicT = z.output<typeof Topic>;
+export type ProducerT = z.output<typeof Producer>;
+export type ConsumerT = z.output<typeof Consumer>;
+export type ActionT = z.output<typeof Action>;
+
+// ---------------------------------------------------------------- events
+
+export const NodeKind = z.enum(['broker', 'controller', 'producer', 'consumer', 'mm2']);
+export const NodeStatus = z.enum(['running', 'dead', 'paused']);
+
+/** Topic-partition key: `<cluster>/<topic>/<partition>` */
+const Tp = z.string();
+
+export const SimEvent = z.discriminatedUnion('type', [
+  z.object({ t: z.number(), type: z.literal('NODE_STATUS'), node: Id, status: NodeStatus, reason: z.string().optional() }),
+  /** Controller's view: fenced brokers lead nothing and are dropped from ISRs. */
+  z.object({ t: z.number(), type: z.literal('BROKER_FENCE'), cluster: Id, node: Id, fenced: z.boolean(), reason: z.string().optional() }),
+  z.object({ t: z.number(), type: z.literal('CONTROLLER_ELECTED'), cluster: Id, node: Id, epoch: z.number().int() }),
+  z.object({ t: z.number(), type: z.literal('CONTROLLER_LOST'), cluster: Id, node: Id }),
+  z.object({
+    t: z.number(),
+    type: z.literal('LEADER_CHANGE'),
+    tp: Tp,
+    /** null = partition offline. */
+    leader: Id.nullable(),
+    epoch: z.number().int(),
+    unclean: z.boolean().default(false),
+  }),
+  z.object({ t: z.number(), type: z.literal('ISR_CHANGE'), tp: Tp, isr: z.array(Id), reason: z.string().optional() }),
+  /** Per-replica log end offset. */
+  z.object({ t: z.number(), type: z.literal('LEO'), tp: Tp, node: Id, leo: z.number().int() }),
+  /** High watermark as known by the leader. */
+  z.object({ t: z.number(), type: z.literal('HW'), tp: Tp, hw: z.number().int() }),
+  z.object({ t: z.number(), type: z.literal('TRUNCATE'), tp: Tp, node: Id, from: z.number().int(), to: z.number().int() }),
+  z.object({ t: z.number(), type: z.literal('PRODUCE_ACK'), producer: Id, tp: Tp, count: z.number().int(), latencyMs: z.number() }),
+  z.object({ t: z.number(), type: z.literal('PRODUCE_ERROR'), producer: Id, tp: Tp, count: z.number().int(), error: z.string(), retriable: z.boolean().default(false) }),
+  z.object({ t: z.number(), type: z.literal('CONSUME'), consumer: Id, tp: Tp, count: z.number().int(), position: z.number().int(), lag: z.number().int() }),
+  /** Acknowledged records that no longer exist on the current leader. */
+  z.object({ t: z.number(), type: z.literal('DATA_LOSS'), tp: Tp, count: z.number().int(), reason: z.string() }),
+  z.object({ t: z.number(), type: z.literal('MIRROR_LAG'), tp: Tp, sourceTp: Tp, lag: z.number().int() }),
+  z.object({ t: z.number(), type: z.literal('MIRROR_PROMOTED'), tp: Tp, rpoRecords: z.number().int() }),
+  z.object({ t: z.number(), type: z.literal('NETWORK'), partitioned: z.boolean(), groups: z.array(z.array(Id)).optional() }),
+  z.object({ t: z.number(), type: z.literal('ACTION'), action: z.string(), detail: z.string() }),
+  /** Human-readable explanation of something notable (shown in the event log). */
+  z.object({ t: z.number(), type: z.literal('NOTE'), level: z.enum(['info', 'warn', 'error']), node: Id.optional(), message: z.string() }),
+  /** A message on the wire — renderer only; never required for state. */
+  z.object({
+    t: z.number(),
+    type: z.literal('MSG'),
+    from: Id,
+    to: Id,
+    kind: z.enum(['produce', 'produce_resp', 'fetch', 'fetch_resp', 'heartbeat', 'metadata', 'vote', 'link_fetch', 'consume']),
+    arriveT: z.number(),
+    dropped: z.boolean().default(false),
+    records: z.number().int().default(0),
+  }),
+]);
+
+export type SimEvent = z.output<typeof SimEvent>;
+export type SimEventType = SimEvent['type'];
+export type MsgKind = Extract<SimEvent, { type: 'MSG' }>['kind'];
+
+export const EventLog = z.object({
+  schemaVersion: z.literal(SCHEMA_VERSION),
+  /** 'sim' | 'recording' | 'live' */
+  source: z.enum(['sim', 'recording', 'live']),
+  manifest: Manifest,
+  events: z.array(SimEvent),
+});
+export type EventLog = z.output<typeof EventLog>;
+
+export const tpKey = (cluster: string, topic: string, partition: number) => `${cluster}/${topic}/${partition}`;
+export const parseTp = (tp: string) => {
+  const parts = tp.split('/');
+  const partition = Number(parts.pop());
+  const cluster = parts.shift()!;
+  return { cluster, topic: parts.join('/'), partition };
+};
+
+export function parseManifest(input: unknown): Manifest {
+  const m = Manifest.parse(input);
+  validateRefs(m);
+  return m;
+}
+
+/** Cross-reference checks zod can't express. Throws with every problem listed. */
+export function validateRefs(m: Manifest): void {
+  const errs: string[] = [];
+  const regions = new Set(m.regions.map((r) => r.id));
+  const nodes = new Set<string>();
+  const dup = (id: string) => {
+    if (nodes.has(id)) errs.push(`duplicate node id "${id}"`);
+    nodes.add(id);
+  };
+  const clusters = new Map(m.clusters.map((c) => [c.id, c]));
+  for (const c of m.clusters) {
+    for (const n of [...c.controllers, ...c.brokers]) {
+      dup(n.id);
+      if (!regions.has(n.region)) errs.push(`${n.id}: unknown region "${n.region}"`);
+    }
+  }
+  const topics = new Set<string>();
+  for (const t of m.topics) {
+    const c = clusters.get(t.cluster);
+    if (!c) {
+      errs.push(`topic ${t.name}: unknown cluster "${t.cluster}"`);
+      continue;
+    }
+    topics.add(`${t.cluster}/${t.name}`);
+    const brokerIds = new Set(c.brokers.map((b) => b.id));
+    if (t.replicas && t.replicas.length !== t.partitions)
+      errs.push(`topic ${t.name}: replicas has ${t.replicas.length} entries, partitions=${t.partitions}`);
+    for (const list of [...(t.replicas ?? []), ...(t.observers ?? [])])
+      for (const b of list) if (!brokerIds.has(b)) errs.push(`topic ${t.name}: "${b}" is not a broker of ${c.id}`);
+    if (!t.replicas && (t.replicationFactor ?? 1) > c.brokers.length)
+      errs.push(`topic ${t.name}: replicationFactor > broker count`);
+    if (t.mirror) {
+      const src = m.topics.find((s) => s.cluster === t.mirror!.sourceCluster && s.name === t.mirror!.sourceTopic);
+      if (src && src.partitions !== t.partitions) errs.push(`topic ${t.name}: mirror must have ${src.partitions} partitions like its source`);
+      if (t.mirror.sourceCluster === t.cluster) errs.push(`topic ${t.name}: mirror source must be another cluster`);
+    }
+    if (t.mirror?.type === 'cluster_link' && c.flavor !== 'confluent')
+      errs.push(`topic ${t.name}: cluster_link requires a confluent-flavor destination cluster`);
+    if ((t.observers?.length ?? 0) > 0 && c.flavor !== 'confluent')
+      errs.push(`topic ${t.name}: observers require a confluent-flavor cluster`);
+  }
+  for (const t of m.topics)
+    if (t.mirror && !topics.has(`${t.mirror.sourceCluster}/${t.mirror.sourceTopic}`))
+      errs.push(`topic ${t.name}: mirror source ${t.mirror.sourceCluster}/${t.mirror.sourceTopic} not declared`);
+  for (const p of [...m.producers, ...m.consumers]) {
+    dup(p.id);
+    if (!regions.has(p.region)) errs.push(`${p.id}: unknown region "${p.region}"`);
+    if (!topics.has(`${p.cluster}/${p.topic}`)) errs.push(`${p.id}: unknown topic ${p.cluster}/${p.topic}`);
+  }
+  for (const a of m.actions) {
+    if ('node' in a && !nodes.has(a.node)) errs.push(`action ${a.type}@${a.at}: unknown node "${a.node}"`);
+    if (a.type === 'PARTITION')
+      for (const g of a.groups) for (const x of g) if (!regions.has(x) && !nodes.has(x)) errs.push(`PARTITION: unknown "${x}"`);
+  }
+  if (errs.length) throw new Error(`manifest "${m.name}" invalid:\n  - ${errs.join('\n  - ')}`);
+}
+
+/** Replica placement when `replicas` is omitted: rack/region-interleaved round robin (rack-aware). */
+export function assignReplicas(cluster: ClusterT, topic: TopicT): string[][] {
+  const by = new Map<string, string[]>();
+  for (const b of cluster.brokers) by.set(b.rack ?? b.region, [...(by.get(b.rack ?? b.region) ?? []), b.id]);
+  const lists = [...by.values()];
+  const order: string[] = [];
+  for (let i = 0; order.length < cluster.brokers.length; i++) for (const l of lists) if (l[i]) order.push(l[i]!);
+  const rf = topic.replicationFactor ?? Math.min(3, order.length);
+  return Array.from({ length: topic.partitions }, (_, p) => topic.replicas?.[p] ?? Array.from({ length: rf }, (_, k) => order[(p + k) % order.length]!));
+}
+
+/**
+ * Live bridge wire protocol (WebSocket, JSON text frames). The bridge sends a
+ * `hello` once per connection, then `events` batches in time order. `t` is ms
+ * since the bridge started observing (monotonic). The UI never sends commands
+ * in v1 — fault injection against a real cluster stays in the harness.
+ */
+export const BridgeFrame = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('hello'), schemaVersion: z.literal(SCHEMA_VERSION), bridge: z.string(), manifest: Manifest }),
+  z.object({ kind: z.literal('events'), events: z.array(SimEvent) }),
+  z.object({ kind: z.literal('error'), message: z.string() }),
+]);
+export type BridgeFrame = z.output<typeof BridgeFrame>;

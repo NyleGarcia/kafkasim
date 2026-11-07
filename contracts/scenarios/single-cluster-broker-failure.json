@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "name": "Single cluster: broker failure",
+  "description": "RF=3, min.insync=2, acks=all. Broker b1 (leader of p0) is killed at 15s: producers time out until the controller fences b1 after broker.session.timeout.ms (9s) and elects a new leader from the ISR. b1 restarts at 35s, catches up and rejoins the ISR. No acknowledged data is lost.",
+  "durationMs": 50000,
+  "regions": [
+    {
+      "id": "dc1",
+      "name": "DC 1"
+    }
+  ],
+  "clusters": [
+    {
+      "id": "main",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "dc1"
+        },
+        {
+          "id": "c2",
+          "region": "dc1"
+        },
+        {
+          "id": "c3",
+          "region": "dc1"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "dc1"
+        },
+        {
+          "id": "b2",
+          "region": "dc1"
+        },
+        {
+          "id": "b3",
+          "region": "dc1"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "main",
+      "name": "orders",
+      "partitions": 3,
+      "replicationFactor": 3
+    }
+  ],
+  "producers": [
+    {
+      "id": "checkout",
+      "cluster": "main",
+      "region": "dc1",
+      "topic": "orders",
+      "acks": "all",
+      "ratePerSec": 40
+    }
+  ],
+  "consumers": [
+    {
+      "id": "billing",
+      "cluster": "main",
+      "region": "dc1",
+      "group": "billing",
+      "topic": "orders"
+    }
+  ],
+  "actions": [
+    {
+      "type": "KILL_NODE",
+      "at": 15000,
+      "node": "b1"
+    },
+    {
+      "type": "RESTART_NODE",
+      "at": 35000,
+      "node": "b1"
+    }
+  ]
+}

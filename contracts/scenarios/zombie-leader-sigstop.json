@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "name": "Zombie leader (SIGSTOP)",
+  "description": "Leader b1 is paused (GC pause / SIGSTOP) for 15s. The controller fences it and elects b2 with a new leader epoch. When b1 wakes up it still believes it leads. It first works through its socket buffer: it appends and acknowledges (acks=1) the produce request that was waiting there, then applies the new metadata, becomes a follower and truncates to the log of the new leader. That acknowledged batch is lost. Leader epochs keep the replicas consistent, but they cannot rescue an acks=1 write.",
+  "durationMs": 40000,
+  "regions": [
+    {
+      "id": "dc1"
+    }
+  ],
+  "clusters": [
+    {
+      "id": "main",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "dc1"
+        },
+        {
+          "id": "c2",
+          "region": "dc1"
+        },
+        {
+          "id": "c3",
+          "region": "dc1"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "dc1"
+        },
+        {
+          "id": "b2",
+          "region": "dc1"
+        },
+        {
+          "id": "b3",
+          "region": "dc1"
+        }
+      ]
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "main",
+      "name": "events",
+      "partitions": 1,
+      "replicas": [
+        [
+          "b1",
+          "b2",
+          "b3"
+        ]
+      ]
+    }
+  ],
+  "producers": [
+    {
+      "id": "svc",
+      "cluster": "main",
+      "region": "dc1",
+      "topic": "events",
+      "acks": 1,
+      "ratePerSec": 50
+    }
+  ],
+  "consumers": [
+    {
+      "id": "reader",
+      "cluster": "main",
+      "region": "dc1",
+      "group": "g",
+      "topic": "events"
+    }
+  ],
+  "actions": [
+    {
+      "type": "PAUSE_NODE",
+      "at": 8000,
+      "node": "b1"
+    },
+    {
+      "type": "RESUME_NODE",
+      "at": 23000,
+      "node": "b1"
+    }
+  ]
+}

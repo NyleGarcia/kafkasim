@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "name": "Unclean leader election",
+  "description": "RF=2, min.insync=1, unclean.leader.election.enable=true. Follower b2 is cut off and drops out of the ISR. Then leader b1 dies: with no ISR member left the controller elects out-of-sync b2 and acknowledged records are lost. Set uncleanLeaderElection=false to see the partition stay offline instead.",
+  "durationMs": 45000,
+  "regions": [
+    {
+      "id": "a"
+    },
+    {
+      "id": "b"
+    }
+  ],
+  "clusters": [
+    {
+      "id": "main",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "a"
+        },
+        {
+          "id": "c2",
+          "region": "a"
+        },
+        {
+          "id": "c3",
+          "region": "a"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "a"
+        },
+        {
+          "id": "b2",
+          "region": "b"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 1,
+        "uncleanLeaderElection": true,
+        "replicaLagTimeMaxMs": 10000
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "main",
+      "name": "audit",
+      "partitions": 1,
+      "replicas": [
+        [
+          "b1",
+          "b2"
+        ]
+      ]
+    }
+  ],
+  "producers": [
+    {
+      "id": "app",
+      "cluster": "main",
+      "region": "a",
+      "topic": "audit",
+      "acks": "all",
+      "ratePerSec": 20
+    }
+  ],
+  "actions": [
+    {
+      "type": "PARTITION",
+      "at": 5000,
+      "groups": [
+        [
+          "a"
+        ],
+        [
+          "b2"
+        ]
+      ]
+    },
+    {
+      "type": "KILL_NODE",
+      "at": 25000,
+      "node": "b1"
+    },
+    {
+      "type": "HEAL",
+      "at": 26000
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "name": "MRC observers + promotion (Confluent)",
+  "description": "Confluent Multi-Region Cluster: sync replicas in east, async observers in west (outside the ISR, so they add no WAN latency to acks=all). When east loses brokers and the ISR drops below min.insync, observerPromotionPolicy=under-min-isr adds caught-up observers to the ISR so writes continue.",
+  "requiresConfluent": true,
+  "durationMs": 45000,
+  "regions": [
+    {
+      "id": "east",
+      "name": "US-East"
+    },
+    {
+      "id": "west",
+      "name": "US-West"
+    },
+    {
+      "id": "witness",
+      "name": "Witness"
+    }
+  ],
+  "latency": {
+    "interRegionMs": 40
+  },
+  "clusters": [
+    {
+      "id": "mrc",
+      "flavor": "confluent",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "east"
+        },
+        {
+          "id": "c2",
+          "region": "west"
+        },
+        {
+          "id": "c3",
+          "region": "witness"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "e1",
+          "region": "east"
+        },
+        {
+          "id": "e2",
+          "region": "east"
+        },
+        {
+          "id": "w1",
+          "region": "west"
+        },
+        {
+          "id": "w2",
+          "region": "west"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "mrc",
+      "name": "payments",
+      "partitions": 1,
+      "replicas": [
+        [
+          "e1",
+          "e2"
+        ]
+      ],
+      "observers": [
+        [
+          "w1",
+          "w2"
+        ]
+      ],
+      "observerPromotionPolicy": "under-min-isr"
+    }
+  ],
+  "producers": [
+    {
+      "id": "pos",
+      "cluster": "mrc",
+      "region": "east",
+      "topic": "payments",
+      "acks": "all",
+      "ratePerSec": 30
+    }
+  ],
+  "actions": [
+    {
+      "type": "KILL_NODE",
+      "at": 12000,
+      "node": "e2"
+    },
+    {
+      "type": "RESTART_NODE",
+      "at": 32000,
+      "node": "e2"
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * MFD token system, adapted from SC-ORG-BOT DESIGN.md (14 core tokens):
+ * void canvas, glass cards, telemetry status colours, mono readouts.
+ * Toned down for ops tooling: no chamfers, no Orbitron, glow only on state.
+ */
+:root {
+  --color-bg-base: #020617;
+  --color-bg-card: #0b1222;
+  --color-bg-surface-elevated: #16213a;
+  --color-text-base: #e2e8f0;
+  --color-text-muted: #8b9ab3;
+  --color-accent-hex: #38bdf8;
+  --color-accent-rgb: 56, 189, 248;
+  --telemetry-nominal: #22c55e;
+  --telemetry-warning: #eab308;
+  --telemetry-critical: #ef4444;
+  --telemetry-info: #38bdf8;
+  --telemetry-observer: #a78bfa;
+  --border-glow: 0 0 12px rgba(var(--color-accent-rgb), 0.35);
+  --glass-blur-depth: blur(12px);
+
+  /* shadcn semantic vars */
+  --radius: 0.5rem;
+  --background: var(--color-bg-base);
+  --foreground: var(--color-text-base);
+  --card: var(--color-bg-card);
+  --card-foreground: var(--color-text-base);
+  --popover: var(--color-bg-surface-elevated);
+  --popover-foreground: var(--color-text-base);
+  --primary: var(--color-accent-hex);
+  --primary-foreground: #04121c;
+  --secondary: #1b2742;
+  --secondary-foreground: var(--color-text-base);
+  --muted: #121b30;
+  --muted-foreground: var(--color-text-muted);
+  --accent: #1b2742;
+  --accent-foreground: var(--color-text-base);
+  --destructive: var(--telemetry-critical);
+  --border: #1e2a44;
+  --input: #22304d;
+  --ring: rgba(var(--color-accent-rgb), 0.6);
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-nominal: var(--telemetry-nominal);
+  --color-warning: var(--telemetry-warning);
+  --color-critical: var(--telemetry-critical);
+  --color-info: var(--telemetry-info);
+  --color-success: var(--telemetry-nominal);
+  --color-observer: var(--telemetry-observer);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    background-image: radial-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  ::selection {
+    background: rgba(var(--color-accent-rgb), 0.35);
+  }
+}
+
+@layer components {
+  /* MFD glass panel */
+  .panel {
+    @apply rounded-lg border bg-card/85;
+    backdrop-filter: var(--glass-blur-depth);
+  }
+  .panel-title {
+    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground;
+  }
+  .readout {
+    @apply font-mono tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

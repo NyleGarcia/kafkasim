@@ -1,0 +1,37 @@
+[project]
+name = "kafkasim-harness"
+version = "0.1.0"
+description = "Run kafkasim scenarios against real Apache Kafka in Docker, record event logs, calibrate the simulator"
+readme = "README.md"
+authors = [
+    { name = "Nyle Garcia", email = "nylegarcia01@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "confluent-kafka>=2.16.1",
+    "kafkasim-bridge",
+]
+
+[project.scripts]
+kafkasim-harness = "kafkasim_harness:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+]
+
+[tool.uv.sources]
+kafkasim-bridge = { path = "../bridge", editable = true }
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]

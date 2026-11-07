@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "name": "acks=1 vs acks=all on leader crash",
+  "description": "Two topics share leader b1; its followers sit 25ms away. \"clicks\" uses acks=1: the leader acknowledges as soon as it has written the record, so whatever the followers had not fetched yet is lost when b1 crashes. \"payments\" uses acks=all: every acknowledged record is already on the ISR, so the new leader has it. Same crash, different durability.",
+  "durationMs": 30000,
+  "regions": [
+    {
+      "id": "az1"
+    },
+    {
+      "id": "az2"
+    }
+  ],
+  "latency": {
+    "interRegionMs": 25
+  },
+  "clusters": [
+    {
+      "id": "main",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "az2"
+        },
+        {
+          "id": "c2",
+          "region": "az2"
+        },
+        {
+          "id": "c3",
+          "region": "az2"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "az1"
+        },
+        {
+          "id": "b2",
+          "region": "az2"
+        },
+        {
+          "id": "b3",
+          "region": "az2"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "main",
+      "name": "clicks",
+      "partitions": 1,
+      "replicas": [
+        [
+          "b1",
+          "b2",
+          "b3"
+        ]
+      ]
+    },
+    {
+      "cluster": "main",
+      "name": "payments",
+      "partitions": 1,
+      "replicas": [
+        [
+          "b1",
+          "b2",
+          "b3"
+        ]
+      ]
+    }
+  ],
+  "producers": [
+    {
+      "id": "web",
+      "cluster": "main",
+      "region": "az1",
+      "topic": "clicks",
+      "acks": 1,
+      "ratePerSec": 400,
+      "lingerMs": 0,
+      "batchSize": 100
+    },
+    {
+      "id": "pay",
+      "cluster": "main",
+      "region": "az1",
+      "topic": "payments",
+      "acks": "all",
+      "ratePerSec": 400,
+      "lingerMs": 0,
+      "batchSize": 100
+    }
+  ],
+  "actions": [
+    {
+      "type": "KILL_NODE",
+      "at": 10000,
+      "node": "b1"
+    }
+  ]
+}

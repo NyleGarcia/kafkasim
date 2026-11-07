@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "name": "min.insync.replicas: NOT_ENOUGH_REPLICAS",
+  "description": "RF=3, min.insync=2. After two brokers die the ISR shrinks to 1: acks=all producers get NOT_ENOUGH_REPLICAS (availability traded for durability) while the acks=1 producer keeps writing.",
+  "durationMs": 40000,
+  "regions": [
+    {
+      "id": "dc1"
+    }
+  ],
+  "clusters": [
+    {
+      "id": "main",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "dc1"
+        },
+        {
+          "id": "c2",
+          "region": "dc1"
+        },
+        {
+          "id": "c3",
+          "region": "dc1"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "b1",
+          "region": "dc1"
+        },
+        {
+          "id": "b2",
+          "region": "dc1"
+        },
+        {
+          "id": "b3",
+          "region": "dc1"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "main",
+      "name": "ledger",
+      "partitions": 1,
+      "replicas": [
+        [
+          "b1",
+          "b2",
+          "b3"
+        ]
+      ]
+    },
+    {
+      "cluster": "main",
+      "name": "metrics",
+      "partitions": 1,
+      "replicas": [
+        [
+          "b1",
+          "b2",
+          "b3"
+        ]
+      ]
+    }
+  ],
+  "producers": [
+    {
+      "id": "bank",
+      "cluster": "main",
+      "region": "dc1",
+      "topic": "ledger",
+      "acks": "all",
+      "ratePerSec": 20
+    },
+    {
+      "id": "agent",
+      "cluster": "main",
+      "region": "dc1",
+      "topic": "metrics",
+      "acks": 1,
+      "ratePerSec": 20
+    }
+  ],
+  "actions": [
+    {
+      "type": "KILL_NODE",
+      "at": 8000,
+      "node": "b2"
+    },
+    {
+      "type": "KILL_NODE",
+      "at": 10000,
+      "node": "b3"
+    },
+    {
+      "type": "RESTART_NODE",
+      "at": 28000,
+      "node": "b2"
+    }
+  ]
+}

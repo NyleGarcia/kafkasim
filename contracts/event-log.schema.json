@@ -1,0 +1,1540 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "sim",
+        "recording",
+        "live"
+      ]
+    },
+    "manifest": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "requiresConfluent": {
+          "default": false,
+          "type": "boolean"
+        },
+        "seed": {
+          "default": 1,
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "durationMs": {
+          "default": 60000,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "regions": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "latency": {
+          "type": "object",
+          "properties": {
+            "intraRegionMs": {
+              "default": 1,
+              "type": "number",
+              "minimum": 0
+            },
+            "interRegionMs": {
+              "default": 30,
+              "type": "number",
+              "minimum": 0
+            },
+            "jitter": {
+              "default": 0.1,
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "links": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  },
+                  "b": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  },
+                  "ms": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "ms"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "intraRegionMs",
+            "interRegionMs",
+            "jitter",
+            "links"
+          ],
+          "additionalProperties": false
+        },
+        "clusters": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "name": {
+                "type": "string"
+              },
+              "flavor": {
+                "default": "apache",
+                "type": "string",
+                "enum": [
+                  "apache",
+                  "confluent"
+                ]
+              },
+              "controllers": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9_.-]+$"
+                    },
+                    "region": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9_.-]+$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "region"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "brokers": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9_.-]+$"
+                    },
+                    "region": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9_.-]+$"
+                    },
+                    "rack": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "region"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "config": {
+                "type": "object",
+                "properties": {
+                  "replicaLagTimeMaxMs": {
+                    "default": 30000,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "minInsyncReplicas": {
+                    "default": 1,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "uncleanLeaderElection": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "brokerHeartbeatIntervalMs": {
+                    "default": 2000,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "brokerSessionTimeoutMs": {
+                    "default": 9000,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "quorumFetchTimeoutMs": {
+                    "default": 2000,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "quorumElectionTimeoutMs": {
+                    "default": 1000,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "replicaFetchWaitMaxMs": {
+                    "default": 500,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "replicaLagTimeMaxMs",
+                  "minInsyncReplicas",
+                  "uncleanLeaderElection",
+                  "brokerHeartbeatIntervalMs",
+                  "brokerSessionTimeoutMs",
+                  "quorumFetchTimeoutMs",
+                  "quorumElectionTimeoutMs",
+                  "replicaFetchWaitMaxMs"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "flavor",
+              "controllers",
+              "brokers",
+              "config"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "topics": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cluster": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "partitions": {
+                "default": 1,
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "replicas": {
+                "type": "array",
+                "items": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                }
+              },
+              "replicationFactor": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "observers": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                }
+              },
+              "observerPromotionPolicy": {
+                "default": "none",
+                "type": "string",
+                "enum": [
+                  "none",
+                  "under-min-isr"
+                ]
+              },
+              "minInsyncReplicas": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "mirror": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "cluster_link",
+                      "mm2"
+                    ]
+                  },
+                  "sourceCluster": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  },
+                  "sourceTopic": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "workerRegion": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  },
+                  "fetchIntervalMs": {
+                    "default": 500,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "type",
+                  "sourceCluster",
+                  "sourceTopic",
+                  "fetchIntervalMs"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "cluster",
+              "name",
+              "partitions",
+              "observerPromotionPolicy"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "producers": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "cluster": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "region": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "topic": {
+                "type": "string",
+                "minLength": 1
+              },
+              "acks": {
+                "default": "all",
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "const": 0
+                  },
+                  {
+                    "type": "number",
+                    "const": 1
+                  },
+                  {
+                    "type": "string",
+                    "const": "all"
+                  }
+                ]
+              },
+              "ratePerSec": {
+                "default": 10,
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "lingerMs": {
+                "default": 5,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "batchSize": {
+                "default": 16,
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "enableIdempotence": {
+                "default": true,
+                "type": "boolean"
+              },
+              "requestTimeoutMs": {
+                "default": 30000,
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "deliveryTimeoutMs": {
+                "default": 120000,
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "retryBackoffMs": {
+                "default": 100,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "startMs": {
+                "default": 0,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "stopMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "id",
+              "cluster",
+              "region",
+              "topic",
+              "acks",
+              "ratePerSec",
+              "lingerMs",
+              "batchSize",
+              "enableIdempotence",
+              "requestTimeoutMs",
+              "deliveryTimeoutMs",
+              "retryBackoffMs",
+              "startMs"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "consumers": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "cluster": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "region": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "group": {
+                "type": "string",
+                "minLength": 1
+              },
+              "topic": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pollIntervalMs": {
+                "default": 200,
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "maxPollRecords": {
+                "default": 500,
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "startMs": {
+                "default": 0,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "id",
+              "cluster",
+              "region",
+              "group",
+              "topic",
+              "pollIntervalMs",
+              "maxPollRecords",
+              "startMs"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "actions": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "KILL_NODE"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "node": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "node"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "RESTART_NODE"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "node": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "node"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "PAUSE_NODE"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "node": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "node"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "RESUME_NODE"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "node": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "node"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "PARTITION"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "groups": {
+                    "minItems": 2,
+                    "type": "array",
+                    "items": {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "groups"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "HEAL"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "type",
+                  "at"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "SET_LATENCY"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "a": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  },
+                  "b": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  },
+                  "ms": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "a",
+                  "b",
+                  "ms"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "FAILOVER"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "cluster": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  },
+                  "topic": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "cluster",
+                  "topic"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "STOP_PRODUCER"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "producer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "producer"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "START_PRODUCER"
+                  },
+                  "at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "producer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "at",
+                  "producer"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "name",
+        "description",
+        "requiresConfluent",
+        "seed",
+        "durationMs",
+        "regions",
+        "latency",
+        "clusters",
+        "topics",
+        "producers",
+        "consumers",
+        "actions"
+      ],
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "NODE_STATUS"
+              },
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "running",
+                  "dead",
+                  "paused"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "node",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "BROKER_FENCE"
+              },
+              "cluster": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "fenced": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "cluster",
+              "node",
+              "fenced"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "CONTROLLER_ELECTED"
+              },
+              "cluster": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "epoch": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "cluster",
+              "node",
+              "epoch"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "CONTROLLER_LOST"
+              },
+              "cluster": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "cluster",
+              "node"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "LEADER_CHANGE"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "leader": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "epoch": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "unclean": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "tp",
+              "leader",
+              "epoch",
+              "unclean"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "ISR_CHANGE"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "isr": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.-]+$"
+                }
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "tp",
+              "isr"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "LEO"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "leo": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "tp",
+              "node",
+              "leo"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "HW"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "hw": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "tp",
+              "hw"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "TRUNCATE"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "from": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "to": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "tp",
+              "node",
+              "from",
+              "to"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "PRODUCE_ACK"
+              },
+              "producer": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "latencyMs": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "producer",
+              "tp",
+              "count",
+              "latencyMs"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "PRODUCE_ERROR"
+              },
+              "producer": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "error": {
+                "type": "string"
+              },
+              "retriable": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "producer",
+              "tp",
+              "count",
+              "error",
+              "retriable"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "CONSUME"
+              },
+              "consumer": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "position": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "lag": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "consumer",
+              "tp",
+              "count",
+              "position",
+              "lag"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "DATA_LOSS"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "tp",
+              "count",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "MIRROR_LAG"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "sourceTp": {
+                "type": "string"
+              },
+              "lag": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "tp",
+              "sourceTp",
+              "lag"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "MIRROR_PROMOTED"
+              },
+              "tp": {
+                "type": "string"
+              },
+              "rpoRecords": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "tp",
+              "rpoRecords"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "NETWORK"
+              },
+              "partitioned": {
+                "type": "boolean"
+              },
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                }
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "partitioned"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "ACTION"
+              },
+              "action": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "action",
+              "detail"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "NOTE"
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "info",
+                  "warn",
+                  "error"
+                ]
+              },
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "level",
+              "message"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "const": "MSG"
+              },
+              "from": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "produce",
+                  "produce_resp",
+                  "fetch",
+                  "fetch_resp",
+                  "heartbeat",
+                  "metadata",
+                  "vote",
+                  "link_fetch",
+                  "consume"
+                ]
+              },
+              "arriveT": {
+                "type": "number"
+              },
+              "dropped": {
+                "default": false,
+                "type": "boolean"
+              },
+              "records": {
+                "default": 0,
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "t",
+              "type",
+              "from",
+              "to",
+              "kind",
+              "arriveT",
+              "dropped",
+              "records"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "source",
+    "manifest",
+    "events"
+  ],
+  "additionalProperties": false
+}

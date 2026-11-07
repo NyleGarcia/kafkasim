@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "name": "MirrorMaker 2 DR (Apache)",
+  "description": "Apache Kafka DR: a MirrorMaker 2 Connect worker in the DR region consumes from the primary and produces to the DR cluster. Offsets on the DR topic are not the source offsets, so consumer offsets have to be translated through checkpoints. Compare its RPO with the Cluster Linking scenario.",
+  "durationMs": 40000,
+  "regions": [
+    {
+      "id": "east",
+      "name": "Primary (US-East)"
+    },
+    {
+      "id": "west",
+      "name": "DR (US-West)"
+    }
+  ],
+  "latency": {
+    "interRegionMs": 35
+  },
+  "clusters": [
+    {
+      "id": "primary",
+      "controllers": [
+        {
+          "id": "pc1",
+          "region": "east"
+        },
+        {
+          "id": "pc2",
+          "region": "east"
+        },
+        {
+          "id": "pc3",
+          "region": "east"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "pb1",
+          "region": "east"
+        },
+        {
+          "id": "pb2",
+          "region": "east"
+        },
+        {
+          "id": "pb3",
+          "region": "east"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2
+      }
+    },
+    {
+      "id": "dr",
+      "controllers": [
+        {
+          "id": "dc1",
+          "region": "west"
+        },
+        {
+          "id": "dc2",
+          "region": "west"
+        },
+        {
+          "id": "dc3",
+          "region": "west"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "db1",
+          "region": "west"
+        },
+        {
+          "id": "db2",
+          "region": "west"
+        },
+        {
+          "id": "db3",
+          "region": "west"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "primary",
+      "name": "orders",
+      "partitions": 2,
+      "replicationFactor": 3
+    },
+    {
+      "cluster": "dr",
+      "name": "primary.orders",
+      "partitions": 2,
+      "replicationFactor": 3,
+      "mirror": {
+        "type": "mm2",
+        "sourceCluster": "primary",
+        "sourceTopic": "orders",
+        "workerRegion": "west",
+        "fetchIntervalMs": 500
+      }
+    }
+  ],
+  "producers": [
+    {
+      "id": "shop",
+      "cluster": "primary",
+      "region": "east",
+      "topic": "orders",
+      "acks": "all",
+      "ratePerSec": 50
+    }
+  ],
+  "actions": [
+    {
+      "type": "KILL_NODE",
+      "at": 20000,
+      "node": "pb1"
+    },
+    {
+      "type": "KILL_NODE",
+      "at": 20000,
+      "node": "pb2"
+    },
+    {
+      "type": "KILL_NODE",
+      "at": 20000,
+      "node": "pb3"
+    },
+    {
+      "type": "FAILOVER",
+      "at": 25000,
+      "cluster": "dr",
+      "topic": "primary.orders"
+    }
+  ]
+}

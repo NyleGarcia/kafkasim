@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "name": "Stretch cluster: region partition",
+  "description": "One KRaft cluster across east/west plus a controller-only witness region (40ms WAN). acks=all produce latency includes the WAN round trip. At 15s west is cut off. East keeps quorum (2 of 3 controllers). acks=all writes stall until the west brokers are fenced and leave the ISR, then partition 0 resumes. Partition 1 was led by w1, so its in-flight request never gets a TCP reset and waits the full request.timeout.ms (30s) before it retries against the new leader e2. After the heal at 35s the west brokers catch up and rejoin.",
+  "durationMs": 55000,
+  "regions": [
+    {
+      "id": "east",
+      "name": "US-East"
+    },
+    {
+      "id": "west",
+      "name": "US-West"
+    },
+    {
+      "id": "witness",
+      "name": "Witness"
+    }
+  ],
+  "latency": {
+    "intraRegionMs": 1,
+    "interRegionMs": 40,
+    "links": [
+      {
+        "a": "east",
+        "b": "witness",
+        "ms": 15
+      },
+      {
+        "a": "west",
+        "b": "witness",
+        "ms": 30
+      }
+    ]
+  },
+  "clusters": [
+    {
+      "id": "stretch",
+      "controllers": [
+        {
+          "id": "c1",
+          "region": "east"
+        },
+        {
+          "id": "c2",
+          "region": "west"
+        },
+        {
+          "id": "c3",
+          "region": "witness"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "e1",
+          "region": "east"
+        },
+        {
+          "id": "e2",
+          "region": "east"
+        },
+        {
+          "id": "w1",
+          "region": "west"
+        },
+        {
+          "id": "w2",
+          "region": "west"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2,
+        "replicaLagTimeMaxMs": 10000
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "stretch",
+      "name": "trades",
+      "partitions": 2,
+      "replicationFactor": 4
+    }
+  ],
+  "producers": [
+    {
+      "id": "east-app",
+      "cluster": "stretch",
+      "region": "east",
+      "topic": "trades",
+      "acks": "all",
+      "ratePerSec": 30,
+      "lingerMs": 100
+    }
+  ],
+  "consumers": [
+    {
+      "id": "west-risk",
+      "cluster": "stretch",
+      "region": "west",
+      "group": "risk",
+      "topic": "trades"
+    }
+  ],
+  "actions": [
+    {
+      "type": "PARTITION",
+      "at": 15000,
+      "groups": [
+        [
+          "east",
+          "witness"
+        ],
+        [
+          "west"
+        ]
+      ]
+    },
+    {
+      "type": "HEAL",
+      "at": 35000
+    }
+  ]
+}
