@@ -1,4 +1,4 @@
-import type { Manifest } from '@kafkasim/engine';
+import { locationsOf, type Manifest } from '@kafkasim/engine';
 
 export type NodeKind = 'broker' | 'controller' | 'producer' | 'consumer' | 'mm2' | 'worker';
 
@@ -23,23 +23,40 @@ export interface ClusterBox {
   flavor: 'apache' | 'confluent';
 }
 
+/** One column per placement location (an AZ, or a zoneless region). */
 export interface RegionCol {
+  id: string;
+  name: string;
+  region: string;
+  x: number;
+  w: number;
+}
+
+/** A region band spanning its zone columns (only drawn when the region has zones). */
+export interface RegionBand {
   id: string;
   name: string;
   x: number;
   w: number;
+  zoned: boolean;
 }
 
 export interface Layout {
   width: number;
   height: number;
   regions: RegionCol[];
+  bands: RegionBand[];
+  /** y where cluster blocks start (taller when zones need a second header row) */
+  header: number;
   clusters: ClusterBox[];
   nodes: Map<string, NodeBox>;
 }
 
 const PAD = 16;
 const HEADER = 34;
+const ZONED_HEADER = 58;
+const ZONE_GAP = 8;
+const MIN_COL = 132;
 const ROW = 64;
 const CLUSTER_HEADER = 22;
 const CLUSTER_GAP = 14;
@@ -51,9 +68,26 @@ const CLUSTER_GAP = 14;
  * recomputed only on resize / manifest change).
  */
 export function computeLayout(m: Manifest, width: number): Layout {
-  const regions = m.regions;
-  const colW = (width - PAD * (regions.length + 1)) / regions.length;
-  const cols: RegionCol[] = regions.map((r, i) => ({ id: r.id, name: r.name ?? r.id, x: PAD + i * (colW + PAD), w: colW }));
+  const locs = locationsOf(m);
+  const zoned = m.regions.some((r) => r.zones?.length);
+  const HEADER_H = zoned ? ZONED_HEADER : HEADER;
+  // gaps: PAD between regions, a smaller gap between zones of the same region
+  const gaps = locs.reduce((a, l, i) => a + (i === 0 ? 0 : locs[i - 1]!.region === l.region ? ZONE_GAP : PAD * 1.5), 0);
+  // never squeeze a column below MIN_COL: the canvas grows and its container scrolls instead
+  const colW = Math.max(MIN_COL, (width - PAD * 2 - gaps) / locs.length);
+  const cols: RegionCol[] = [];
+  let cx = PAD;
+  locs.forEach((l, i) => {
+    if (i > 0) cx += locs[i - 1]!.region === l.region ? ZONE_GAP : PAD * 1.5;
+    cols.push({ id: l.id, name: l.name, region: l.region, x: cx, w: colW });
+    cx += colW;
+  });
+  const bands: RegionBand[] = m.regions.map((r) => {
+    const mine = cols.filter((c) => c.region === r.id);
+    const x0 = mine[0]!.x;
+    const x1 = mine.at(-1)!.x + mine.at(-1)!.w;
+    return { id: r.id, name: r.name ?? r.id, x: x0, w: x1 - x0, zoned: !!r.zones?.length };
+  });
   const nodes = new Map<string, NodeBox>();
   const clusters: ClusterBox[] = [];
   const hueOf = new Map(m.clusters.map((c, i) => [c.id, [199, 262, 152, 32, 330][i % 5]!]));
@@ -73,7 +107,7 @@ export function computeLayout(m: Manifest, width: number): Layout {
 
   let maxY = 0;
   for (const col of cols) {
-    let y = HEADER + PAD;
+    let y = HEADER_H + PAD;
     for (const c of m.clusters) {
       const ctl = c.controllers.filter((x) => x.region === col.id);
       const brk = c.brokers.filter((x) => x.region === col.id);
@@ -104,7 +138,7 @@ export function computeLayout(m: Manifest, width: number): Layout {
     }
     maxY = Math.max(maxY, y);
   }
-  return { width, height: Math.max(maxY + PAD, 260), regions: cols, clusters, nodes };
+  return { width: Math.max(width, cx + PAD), height: Math.max(maxY + PAD, 260), regions: cols, bands, header: HEADER_H, clusters, nodes };
 }
 
 export function hitTest(layout: Layout, x: number, y: number): NodeBox | null {
@@ -112,7 +146,13 @@ export function hitTest(layout: Layout, x: number, y: number): NodeBox | null {
   return null;
 }
 
+/** Click on a header: the region band (top row) → region id; the zone row → zone id. */
 export function regionAt(layout: Layout, x: number, y: number): string | null {
-  if (y > HEADER) return null;
+  if (y > layout.header) return null;
+  const zonedHeader = layout.header === ZONED_HEADER;
+  if (zonedHeader && y < 28) {
+    const b = layout.bands.find((r) => x >= r.x && x <= r.x + r.w);
+    if (b) return b.id;
+  }
   return layout.regions.find((r) => x >= r.x && x <= r.x + r.w)?.id ?? null;
 }

@@ -6,15 +6,18 @@ const ctl3 = (region: string | string[], prefix = 'c') =>
 const brokers = (ids: string[], region: string) => ids.map((id) => ({ id, region }));
 
 
-/** 3-zone CFK cluster: 1 controller + 2 brokers per zone, `workersPerZone` workers (capacity 1) per zone. */
-const cfk = (opts: { workersPerZone?: number[]; rackAwareness?: boolean; selfBalancingMs?: number; storage?: 'zoneLocked' | 'ephemeral' } = {}) => {
-  const zones = ['az1', 'az2', 'az3'];
-  const wpz = opts.workersPerZone ?? [3, 3, 3];
+/** CFK cluster over 3 AZs: 1 controller + 2 brokers per AZ, `workersPerZone` workers (capacity 1) per AZ. */
+const cfk = (
+  opts: { id?: string; zones?: string[]; prefix?: string; workersPerZone?: number[]; rackAwareness?: boolean; selfBalancingMs?: number; storage?: 'zoneLocked' | 'ephemeral' } = {},
+) => {
+  const zones = opts.zones ?? ['az1', 'az2', 'az3'];
+  const px = opts.prefix ?? '';
+  const wpz = opts.workersPerZone ?? zones.map(() => 3);
   return {
-    id: 'cfk',
+    id: opts.id ?? 'cfk',
     flavor: 'confluent' as const,
-    controllers: zones.map((z, i) => ({ id: `c${i + 1}`, region: z })),
-    brokers: zones.flatMap((z, i) => [{ id: `b${2 * i + 1}`, region: z }, { id: `b${2 * i + 2}`, region: z }]),
+    controllers: zones.map((z, i) => ({ id: `${px}c${i + 1}`, region: z })),
+    brokers: zones.flatMap((z, i) => [{ id: `${px}b${2 * i + 1}`, region: z }, { id: `${px}b${2 * i + 2}`, region: z }]),
     config: { minInsyncReplicas: 2, replicaLagTimeMaxMs: 10_000 },
     platform: {
       type: 'kubernetes' as const,
@@ -25,12 +28,19 @@ const cfk = (opts: { workersPerZone?: number[]; rackAwareness?: boolean; selfBal
     },
   };
 };
+/** one AWS-style region with three availability zones */
 const azs = [
-  { id: 'az1', name: 'us-east-1a' },
-  { id: 'az2', name: 'us-east-1b' },
-  { id: 'az3', name: 'us-east-1c' },
+  {
+    id: 'us-east-1',
+    name: 'us-east-1',
+    zones: [
+      { id: 'az1', name: 'us-east-1a' },
+      { id: 'az2', name: 'us-east-1b' },
+      { id: 'az3', name: 'us-east-1c' },
+    ],
+  },
 ];
-const azLatency = { intraRegionMs: 0.5, interRegionMs: 1.5 };
+const azLatency = { intraRegionMs: 0.4, interZoneMs: 1.2 };
 
 export const scenarios: ManifestInput[] = [
   {
@@ -347,6 +357,31 @@ export const scenarios: ManifestInput[] = [
       { type: 'K8S_CORDON', at: 10_000, target: 'w-az3-2' },
       { type: 'POD_DELETE', at: 10_500, pod: 'b5' },
       { type: 'K8S_UNCORDON', at: 60_000, target: 'w-az3-2' },
+    ],
+  },
+  {
+    schemaVersion: 1,
+    name: 'Multi-region CFK: 2 regions × 3 AZs, region outage + Cluster Linking failover',
+    description:
+      'Two CFK clusters, one per region, each spread over 3 availability zones: about 1ms between AZs, 65ms between regions. Inside each region RF=3 with rack awareness keeps a replica in every AZ, so a single-AZ failure (us-east-1a at 15s) costs nothing but redundancy. us-west-2 mirrors orders over a cluster link. At 40s all of us-east-1 goes dark. At 45s the mirror is promoted, and RPO is whatever the link had not copied in the last round trip.',
+    requiresConfluent: true,
+    durationMs: 70_000,
+    regions: [
+      { id: 'us-east-1', zones: [{ id: 'use1-az1', name: 'us-east-1a' }, { id: 'use1-az2', name: 'us-east-1b' }, { id: 'use1-az3', name: 'us-east-1c' }] },
+      { id: 'us-west-2', zones: [{ id: 'usw2-az1', name: 'us-west-2a' }, { id: 'usw2-az2', name: 'us-west-2b' }, { id: 'usw2-az3', name: 'us-west-2c' }] },
+    ],
+    latency: { intraRegionMs: 0.4, interZoneMs: 1.2, interRegionMs: 65 },
+    clusters: [cfk({ id: 'east', zones: ['use1-az1', 'use1-az2', 'use1-az3'], prefix: 'e' }), cfk({ id: 'west', zones: ['usw2-az1', 'usw2-az2', 'usw2-az3'], prefix: 'w' })],
+    topics: [
+      { cluster: 'east', name: 'orders', partitions: 3, replicationFactor: 3 },
+      { cluster: 'west', name: 'orders', partitions: 3, replicationFactor: 3, mirror: { type: 'cluster_link', sourceCluster: 'east', sourceTopic: 'orders', fetchIntervalMs: 500 } },
+    ],
+    producers: [{ id: 'shop', cluster: 'east', region: 'use1-az2', topic: 'orders', acks: 'all', ratePerSec: 50 }],
+    consumers: [{ id: 'analytics', cluster: 'east', region: 'use1-az3', group: 'analytics', topic: 'orders' }],
+    actions: [
+      { type: 'ZONE_OUTAGE', at: 15_000, zone: 'use1-az1' },
+      { type: 'ZONE_OUTAGE', at: 40_000, zone: 'us-east-1' },
+      { type: 'FAILOVER', at: 45_000, cluster: 'west', topic: 'orders' },
     ],
   },
 ];

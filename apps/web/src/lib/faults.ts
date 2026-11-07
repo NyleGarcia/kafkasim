@@ -1,4 +1,4 @@
-import type { ActionT, Manifest, NodeView, WorkerView } from '@kafkasim/engine';
+import { expandLocation, locationsOf, type ActionT, type Manifest, type NodeView, type WorkerView } from '@kafkasim/engine';
 
 /** ActionT minus `at`, distributed over the union (plain Omit collapses it). */
 export type ActionDraft = ActionT extends infer A ? (A extends ActionT ? Omit<A, 'at'> : never) : never;
@@ -39,10 +39,14 @@ export function nodeFaults(m: Manifest, n: NodeView): FaultOption[] {
   return out;
 }
 
-export function regionFaults(m: Manifest, region: string, partitioned: boolean): FaultOption[] {
+/** Isolate / heal for a region or an AZ (`id` may be either). */
+export function regionFaults(m: Manifest, id: string, partitioned: boolean): FaultOption[] {
   const out: FaultOption[] = [];
-  const others = m.regions.filter((r) => r.id !== region).map((r) => r.id);
-  if (others.length) out.push({ label: `Isolate ${region}`, hint: 'cut this region off from all others', tone: 'warning', action: { type: 'PARTITION', groups: [others, [region]] } });
+  const inside = new Set(expandLocation(m, id));
+  const others = locationsOf(m)
+    .map((l) => l.id)
+    .filter((l) => !inside.has(l));
+  if (others.length) out.push({ label: `Isolate ${id}`, hint: 'network partition: cut it off from everything else (nodes keep running)', tone: 'warning', action: { type: 'PARTITION', groups: [others, [id]] } });
   if (partitioned) out.push({ label: 'Heal network', hint: 'remove all partitions', action: { type: 'HEAL' } });
   return out;
 }
@@ -60,12 +64,18 @@ export function workerFaults(w: WorkerView): FaultOption[] {
   return out;
 }
 
-export function zoneFaults(m: Manifest, zone: string): FaultOption[] {
-  if (!m.clusters.some((c) => c.platform?.workers.some((w) => w.zone === zone))) return [];
-  return [
-    { label: `AZ outage: ${zone}`, hint: 'every worker in the zone fails and the zone is cut off', tone: 'critical', action: { type: 'ZONE_OUTAGE', zone } },
-    { label: `AZ recover: ${zone}`, hint: 'workers return, network heals', action: { type: 'ZONE_RECOVER', zone } },
-    { label: `Cordon ${zone}`, hint: 'mark every worker in the zone unschedulable', tone: 'warning', action: { type: 'K8S_CORDON', target: zone } },
-    { label: `Uncordon ${zone}`, hint: 'allow scheduling in the zone again', action: { type: 'K8S_UNCORDON', target: zone } },
+/** Power-level outage of an AZ or a whole region; cordon when it hosts Kubernetes workers. */
+export function zoneFaults(m: Manifest, id: string): FaultOption[] {
+  const locs = new Set(expandLocation(m, id));
+  const isRegion = m.regions.some((r) => r.id === id) && m.regions.find((r) => r.id === id)!.zones?.length;
+  const what = isRegion ? 'region' : 'AZ';
+  const out: FaultOption[] = [
+    { label: `${isRegion ? 'Region' : 'AZ'} outage: ${id}`, hint: `every node and k8s worker in the ${what} goes down and it is cut off`, tone: 'critical', action: { type: 'ZONE_OUTAGE', zone: id } },
+    { label: `${isRegion ? 'Region' : 'AZ'} recover: ${id}`, hint: 'power and network return; nodes restart', action: { type: 'ZONE_RECOVER', zone: id } },
   ];
+  if (m.clusters.some((c) => c.platform?.workers.some((w) => locs.has(w.zone)))) {
+    out.push({ label: `Cordon ${id}`, hint: `mark every worker in the ${what} unschedulable`, tone: 'warning', action: { type: 'K8S_CORDON', target: id } });
+    out.push({ label: `Uncordon ${id}`, hint: 'allow scheduling again', action: { type: 'K8S_UNCORDON', target: id } });
+  }
+  return out;
 }

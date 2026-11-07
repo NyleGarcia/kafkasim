@@ -56,18 +56,42 @@ export function RegionsSection({ d, set }: SectionProps) {
           </Button>
         }
       >
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 lg:grid-cols-2">
           {d.regions.map((r) => (
-            <Card key={r.id} className="flex items-end gap-2 space-y-0">
-              <TextField label={`Display name · id ${r.id}`} value={r.name ?? r.id} onCommit={(n) => set(D.renameRegion(d, r.id, n))} className="flex-1" />
-              <RemoveButton label={`Remove region ${r.id}`} onClick={() => set(D.removeRegion(d, r.id))} disabled={d.regions.length === 1} />
+            <Card key={r.id}>
+              <div className="flex items-end gap-2">
+                <TextField label={`Region · id ${r.id}`} value={r.name ?? r.id} onCommit={(n) => set(D.renameRegion(d, r.id, n))} className="flex-1" />
+                <RemoveButton label={`Remove region ${r.id}`} onClick={() => set(D.removeRegion(d, r.id))} disabled={d.regions.length === 1} />
+              </div>
+              {r.zones?.length ? (
+                <div className="space-y-1.5">
+                  <div className="text-[11px] font-medium text-muted-foreground">Availability zones</div>
+                  {r.zones.map((z) => (
+                    <div key={z.id} className="flex items-end gap-2">
+                      <TextField label={`id ${z.id}`} value={z.name ?? z.id} onCommit={(n) => set(D.renameZone(d, r.id, z.id, n))} className="flex-1" />
+                      <RemoveButton label={`Remove zone ${z.id}`} onClick={() => set(D.removeZone(d, r.id, z.id))} />
+                    </div>
+                  ))}
+                  <Button size="xs" variant="outline" onClick={() => set(D.addZone(d, r.id))}>
+                    <Plus /> AZ
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <p className="flex-1 text-[11px] text-muted-foreground">Single location. Split it to place nodes in separate availability zones, with cross-AZ latency inside the region.</p>
+                  <Button size="xs" variant="outline" onClick={() => set(D.splitRegion(d, r.id))}>
+                    Split into 3 AZs
+                  </Button>
+                </div>
+              )}
             </Card>
           ))}
         </div>
       </Section>
-      <Section title="Network" description="One-way latency per message. Pairs without an override use the default inter-region latency.">
-        <div className="grid gap-3 sm:grid-cols-3">
-          <NumberField label="Intra-region" unit="ms" integer={false} min={0} step={0.1} value={d.latency.intraRegionMs} onCommit={(v) => set(D.setLatency(d, { intraRegionMs: v }))} />
+      <Section title="Network" description="One-way latency per message, in three tiers: same AZ, cross-AZ (same region) and cross-region. Region pairs without an override use the default inter-region latency.">
+        <div className="grid gap-3 sm:grid-cols-4">
+          <NumberField label="Same AZ" hint="Same zone (or same zoneless region)" unit="ms" integer={false} min={0} step={0.1} value={d.latency.intraRegionMs} onCommit={(v) => set(D.setLatency(d, { intraRegionMs: v }))} />
+          <NumberField label="Cross-AZ" hint="Between availability zones of one region" unit="ms" integer={false} min={0} step={0.1} value={d.latency.interZoneMs} onCommit={(v) => set(D.setLatency(d, { interZoneMs: v }))} />
           <NumberField label="Default inter-region" unit="ms" integer={false} min={0} value={d.latency.interRegionMs} onCommit={(v) => set(D.setLatency(d, { interRegionMs: v }))} />
           <NumberField label="Jitter" hint="± uniform fraction of each latency" unit="×" integer={false} min={0} max={1} step={0.05} value={d.latency.jitter} onCommit={(v) => set(D.setLatency(d, { jitter: v }))} />
         </div>
@@ -153,19 +177,19 @@ export function ClustersSection({ d, set }: SectionProps) {
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-muted-foreground">
-                  <th className="pb-1 font-normal">Region</th>
+                  <th className="pb-1 font-normal">Region / AZ</th>
                   <th className="pb-1 font-normal">Controllers</th>
                   <th className="pb-1 font-normal">Brokers</th>
                   <th className="pb-1 font-normal">Nodes</th>
                 </tr>
               </thead>
               <tbody>
-                {d.regions.map((r) => {
+                {D.locations(d).map((r) => {
                   const ctl = c.controllers.filter((x) => x.region === r.id);
                   const brk = c.brokers.filter((x) => x.region === r.id);
                   return (
                     <tr key={r.id} className="border-t border-border/60">
-                      <td className="readout py-1.5">{r.name ?? r.id}</td>
+                      <td className="readout py-1.5">{r.isZone ? `${r.regionName} / ${r.name}` : r.name}</td>
                       <td className="py-1.5">
                         <Stepper label={`controllers in ${r.id}`} value={ctl.length} onChange={(n) => set(D.setNodeCount(d, c.id, 'controllers', r.id, n))} />
                       </td>
@@ -212,7 +236,7 @@ function PlatformPanel({ d, set, c }: SectionProps & { c: ClusterT }) {
       />
       {pf && (
         <>
-          <p className="text-[11px] text-muted-foreground">Regions are availability zones. Each Kafka pod needs a schedulable worker with free capacity in its zone (anti-affinity: 1 pod per worker by default).</p>
+          <p className="text-[11px] text-muted-foreground">Workers live in an AZ (topology.kubernetes.io/zone), or in the region itself if it has no AZs. Each Kafka pod needs a schedulable worker with free capacity in its zone (anti-affinity: 1 pod per worker by default).</p>
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-muted-foreground">
@@ -223,13 +247,13 @@ function PlatformPanel({ d, set, c }: SectionProps & { c: ClusterT }) {
               </tr>
             </thead>
             <tbody>
-              {d.regions.map((r) => {
+              {D.locations(d).map((r) => {
                 const ws = pf.workers.filter((w) => w.zone === r.id);
                 const podsHere = [...c.controllers, ...c.brokers].filter((n) => n.region === r.id).length;
                 const room = ws.filter((w) => w.schedulable).reduce((a, w) => a + w.capacity, 0);
                 return (
                   <tr key={r.id} className="border-t border-border/60 align-top">
-                    <td className="readout py-1.5">{r.name ?? r.id}</td>
+                    <td className="readout py-1.5">{r.isZone ? `${r.regionName} / ${r.name}` : r.name}</td>
                     <td className={cn('readout py-1.5', room < podsHere && 'text-critical')}>
                       {podsHere} / room {room}
                     </td>
@@ -403,7 +427,7 @@ function TopicCard({ d, set, t }: SectionProps & { t: TopicT }) {
                 label="Connect worker region"
                 value={t.mirror.workerRegion ?? c.brokers[0]!.region}
                 onChange={(v) => patch({ mirror: { ...t.mirror!, workerRegion: v } })}
-                options={d.regions.map((r) => ({ value: r.id, label: r.name ?? r.id }))}
+                options={D.locations(d).map((r) => ({ value: r.id, label: r.isZone ? `${r.regionName} / ${r.name}` : r.name }))}
               />
             )}
           </>
@@ -417,7 +441,7 @@ function TopicCard({ d, set, t }: SectionProps & { t: TopicT }) {
 
 export function ClientsSection({ d, set }: SectionProps) {
   const topicOpts = d.topics.map((t) => ({ value: `${t.cluster}/${t.name}`, label: `${t.cluster}/${t.name}` }));
-  const regionOpts = d.regions.map((r) => ({ value: r.id, label: r.name ?? r.id }));
+  const regionOpts = D.locations(d).map((r) => ({ value: r.id, label: r.isZone ? `${r.regionName} / ${r.name}` : r.name }));
   const split = (v: string) => {
     const [cluster, ...rest] = v.split('/');
     return { cluster: cluster!, topic: rest.join('/') };
@@ -517,10 +541,16 @@ const K8S_ACTION = /^(CONTAINER_CRASH|POD_DELETE|K8S_|ZONE_)/;
 export function FaultsSection({ d, set }: SectionProps) {
   const nodes = d.clusters.flatMap((c) => D.nodeIdsOf(c));
   const nodeOpts = nodes.map((n) => ({ value: n, label: n }));
-  const regionIds = d.regions.map((r) => r.id);
+  // regions and their AZs, both valid fault targets (an AZ id is more specific than its region)
+  const zoneIds = D.locations(d).filter((l) => l.isZone).map((l) => l.id);
+  const regionIds = [...d.regions.map((r) => r.id), ...zoneIds];
   const mirrors = d.topics.filter((t) => t.mirror);
   const workers = D.k8sWorkers(d);
   const pods = D.k8sPods(d);
+  const expandLoc = (id: string) => {
+    const r = d.regions.find((x) => x.id === id);
+    return r ? (r.zones?.map((z) => z.id) ?? [r.id]) : [id];
+  };
   return (
     <Section
       title="Timed faults"
@@ -549,7 +579,7 @@ export function FaultsSection({ d, set }: SectionProps) {
                 onChange={(target) => put({ ...a, target })}
               />
             )}
-            {'zone' in a && <SelectField className="w-32" label="Zone" value={a.zone} options={regionIds.map((r) => ({ value: r, label: r }))} onChange={(zone) => put({ ...a, zone })} />}
+            {'zone' in a && <SelectField className="w-40" label="AZ or whole region" value={a.zone} options={regionIds.map((r) => ({ value: r, label: zoneIds.includes(r) ? `AZ ${r}` : `region ${r}` }))} onChange={(zone) => put({ ...a, zone })} />}
             {'node' in a && <SelectField className="w-32" label="Node" value={a.node} options={nodeOpts} onChange={(node) => put({ ...a, node })} />}
             {a.type === 'PARTITION' && (
               <Field label="Cut off (everything else stays together)" className="min-w-60 flex-1">
@@ -562,9 +592,12 @@ export function FaultsSection({ d, set }: SectionProps) {
                     const cut = new Set(a.groups.slice(1).flat());
                     if (cut.has(id)) cut.delete(id);
                     else cut.add(id);
-                    const rest = regionIds.filter((r) => !cut.has(r));
-                    if (!cut.size) return set('Select at least one region or node to cut off.');
-                    // group 0 = every region not cut (nodes listed explicitly override their region)
+                    if (!cut.size) return set('Select at least one region, AZ or node to cut off.');
+                    // group 0 = every location not cut off (explicit ids override their zone/region)
+                    const cutLocs = new Set([...cut].flatMap((id) => expandLoc(id)));
+                    const rest = D.locations(d)
+                      .map((l) => l.id)
+                      .filter((l) => !cutLocs.has(l));
                     put({ ...a, groups: [rest.length ? rest : [nodes.find((n) => !cut.has(n))!], [...cut]] });
                   }}
                 />

@@ -6,21 +6,27 @@
   "durationMs": 150000,
   "regions": [
     {
-      "id": "az1",
-      "name": "us-east-1a"
-    },
-    {
-      "id": "az2",
-      "name": "us-east-1b"
-    },
-    {
-      "id": "az3",
-      "name": "us-east-1c"
+      "id": "us-east-1",
+      "name": "us-east-1",
+      "zones": [
+        {
+          "id": "az1",
+          "name": "us-east-1a"
+        },
+        {
+          "id": "az2",
+          "name": "us-east-1b"
+        },
+        {
+          "id": "az3",
+          "name": "us-east-1c"
+        }
+      ]
     }
   ],
   "latency": {
-    "intraRegionMs": 0.5,
-    "interRegionMs": 1.5
+    "intraRegionMs": 0.4,
+    "interZoneMs": 1.2
   },
   "clusters": [
     {

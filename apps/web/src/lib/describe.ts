@@ -43,6 +43,7 @@ export function describe(e: SimEvent): Described | null {
     case 'ACTION':
       return { level: 'info', source: 'action', text: e.action.replace(/_/g, ' ').toLowerCase() + ' ' + actionTarget(e.detail) };
     case 'K8S_NODE':
+      if (e.t === 0) return null;
       return { level: e.ready ? (e.schedulable ? 'success' : 'warn') : 'error', source: e.node, text: `worker ${e.ready ? 'Ready' : 'NotReady'}${e.schedulable ? '' : ', unschedulable'}` };
     case 'POD':
       if (e.t === 0) return null;

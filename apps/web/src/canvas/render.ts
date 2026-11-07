@@ -50,10 +50,35 @@ export function render(ctx: CanvasRenderingContext2D, L: Layout, v: ViewState, m
 }
 
 function drawRegions(ctx: CanvasRenderingContext2D, L: Layout, v: ViewState) {
+  const zonedHeader = L.header > 40;
+  ctx.textBaseline = 'middle';
+  // region bands (outer) — only distinct from columns when a region has zones
+  if (zonedHeader)
+    for (const b of L.bands) {
+      const cols = L.regions.filter((r) => r.region === b.id);
+      const cut = cols.every((r) => isCut(v, r.id, [r.id, r.region]));
+      ctx.fillStyle = cut ? 'rgba(239,68,68,0.05)' : 'rgba(148,163,184,0.025)';
+      roundRect(ctx, b.x - 10, 2, b.w + 20, L.height - 4, 12);
+      ctx.fill();
+      ctx.strokeStyle = cut ? 'rgba(239,68,68,0.55)' : 'rgba(148,163,184,0.18)';
+      ctx.setLineDash(cut ? [6, 4] : []);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = cut ? C.critical : C.text;
+      ctx.font = '700 11px "Inter Variable", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(b.zoned ? `${b.name.toUpperCase()} · ${cols.length} AZ` : b.name.toUpperCase(), b.x, 15);
+      if (cut) {
+        ctx.textAlign = 'right';
+        ctx.fillText('REGION DOWN / CUT OFF', b.x + b.w, 15);
+      }
+    }
   for (const r of L.regions) {
-    const cut = isCut(v, r.id);
+    const cut = isCut(v, r.id, [r.id, r.region]);
+    const top = zonedHeader ? 26 : 4;
     ctx.fillStyle = cut ? 'rgba(239,68,68,0.06)' : 'rgba(148,163,184,0.03)';
-    roundRect(ctx, r.x - 6, 4, r.w + 12, L.height - 8, 10);
+    roundRect(ctx, r.x - 4, top, r.w + 8, L.height - top - 6, 8);
     ctx.fill();
     ctx.strokeStyle = cut ? 'rgba(239,68,68,0.5)' : 'rgba(148,163,184,0.12)';
     ctx.setLineDash(cut ? [6, 4] : []);
@@ -61,21 +86,21 @@ function drawRegions(ctx: CanvasRenderingContext2D, L: Layout, v: ViewState) {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = cut ? C.critical : C.muted;
-    ctx.font = '600 11px "Inter Variable", sans-serif';
-    ctx.textBaseline = 'middle';
+    ctx.font = `600 ${zonedHeader ? 10 : 11}px "Inter Variable", sans-serif`;
     ctx.textAlign = 'left';
-    ctx.fillText(r.name.toUpperCase(), r.x + 4, 20);
-    if (cut) {
+    const y = zonedHeader ? top + 14 : 20;
+    ctx.fillText(r.name.toUpperCase(), r.x + 4, y);
+    if (cut && r.w > 120) {
       ctx.textAlign = 'right';
-      ctx.fillText('PARTITIONED', r.x + r.w - 4, 20);
+      ctx.fillText('CUT OFF', r.x + r.w - 4, y);
     }
   }
 }
 
-/** A region is "cut" when the network is partitioned and it is not in group 0. */
-function isCut(v: ViewState, region: string) {
+/** A location is "cut" when partitioned into a non-zero group by its own id or its region's id. */
+function isCut(v: ViewState, _id: string, keys: string[]) {
   if (!v.partitioned || !v.groups) return false;
-  return v.groups.slice(1).some((g) => g.includes(region));
+  return v.groups.slice(1).some((g) => keys.some((k) => g.includes(k)));
 }
 
 function drawCluster(ctx: CanvasRenderingContext2D, c: Layout['clusters'][number], v: ViewState) {
@@ -181,7 +206,8 @@ function drawWorker(ctx: CanvasRenderingContext2D, n: NodeBox, v: ViewState, o: 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = tone === C.muted ? C.text : tone;
-  ctx.fillText(n.id.replace(/^w-/, ''), n.x, n.y - 4);
+  // workers are named w-<zone>-<n>: the zone is already the column header
+  ctx.fillText(n.id.replace(/^w-/, '').replace(`${w.zone}-`, '#'), n.x, n.y - 4);
   ctx.fillStyle = C.muted;
   ctx.fillText(pods.length ? pods.map((p) => p.id).join(' ') : 'empty', n.x, n.y + 6);
   ctx.fillStyle = tone;

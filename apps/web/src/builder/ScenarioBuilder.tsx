@@ -164,7 +164,7 @@ function Preview({ d }: { d: D.Draft | null }) {
     render(ctx, layout, initialView(d), [], { t: 0, visualWindowMs: 1, hover: null, highlightTp: null, showControl: false, reducedMotion: true });
   }, [d, width]);
   return (
-    <div ref={wrap} className="panel overflow-hidden">
+    <div ref={wrap} className="panel overflow-x-auto">
       {d ? <canvas ref={canvas} role="img" aria-label="Topology preview" className="block" /> : <p className="p-4 text-xs text-muted-foreground">Fix the problems below to see the preview.</p>}
     </div>
   );

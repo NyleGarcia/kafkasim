@@ -58,6 +58,27 @@
               },
               "name": {
                 "type": "string"
+              },
+              "zones": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9_.-]+$"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "additionalProperties": false
+                }
               }
             },
             "required": [
@@ -71,6 +92,11 @@
           "properties": {
             "intraRegionMs": {
               "default": 1,
+              "type": "number",
+              "minimum": 0
+            },
+            "interZoneMs": {
+              "default": 1.5,
               "type": "number",
               "minimum": 0
             },
@@ -117,6 +143,7 @@
           },
           "required": [
             "intraRegionMs",
+            "interZoneMs",
             "interRegionMs",
             "jitter",
             "links"

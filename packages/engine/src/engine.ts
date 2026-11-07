@@ -13,7 +13,7 @@
  * Simplifications are listed in docs/architecture/engine-model.md.
  */
 import type { ActionT, ClusterT, ConsumerT, Manifest, MsgKind, ProducerT, SimEvent, TopicT } from './schema.ts';
-import { assignReplicas, initialPlacement, tpKey } from './schema.ts';
+import { assignReplicas, expandLocation, initialPlacement, locationsOf, tpKey } from './schema.ts';
 import { EventQueue, rng, type Rng } from './util.ts';
 
 type Kind = 'broker' | 'controller' | 'producer' | 'consumer' | 'mm2';
@@ -232,6 +232,8 @@ class Sim {
   private workers = new Map<string, WorkerRt>();
   private pods = new Map<string, PodRt>();
   private latency = new Map<string, number>();
+  /** location (zone) → region */
+  private locRegion = new Map<string, string>();
   private groups: string[][] | null = null;
   private processed = 0;
 
@@ -242,6 +244,7 @@ class Sim {
     this.m = m;
     this.opts = opts;
     this.r = rng(m.seed);
+    for (const l of locationsOf(m)) this.locRegion.set(l.id, l.region);
     for (const l of m.latency.links) this.latency.set(this.linkKey(l.a, l.b), l.ms);
   }
 
@@ -273,18 +276,28 @@ class Sim {
   private linkKey(a: string, b: string) {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
   }
+  /** a, b = locations (zone ids, or zoneless region ids). */
   private regionLatency(a: string, b: string) {
     if (a === b) return this.m.latency.intraRegionMs;
-    return this.latency.get(this.linkKey(a, b)) ?? this.m.latency.interRegionMs;
+    const direct = this.latency.get(this.linkKey(a, b));
+    if (direct !== undefined) return direct;
+    const ra = this.locRegion.get(a) ?? a;
+    const rb = this.locRegion.get(b) ?? b;
+    if (ra === rb) return this.m.latency.interZoneMs;
+    return this.latency.get(this.linkKey(ra, rb)) ?? this.m.latency.interRegionMs;
   }
   private rtt(a: string, b: string) {
     return 2 * this.regionLatency(this.nodes.get(a)!.region, this.nodes.get(b)!.region);
   }
   private groupOf(id: string) {
     if (!this.groups) return 0;
-    const region = this.nodes.get(id)?.region;
-    for (let i = 0; i < this.groups.length; i++) if (this.groups[i]!.includes(id)) return i;
-    for (let i = 0; i < this.groups.length; i++) if (region && this.groups[i]!.includes(region)) return i;
+    const loc = this.nodes.get(id)?.region;
+    const region = loc ? this.locRegion.get(loc) : undefined;
+    // most specific wins: node id, then its zone, then its region
+    for (const key of [id, loc, region]) {
+      if (!key) continue;
+      for (let i = 0; i < this.groups.length; i++) if (this.groups[i]!.includes(key)) return i;
+    }
     return 0;
   }
   private reachable(a: string, b: string) {
@@ -583,14 +596,16 @@ class Sim {
         this.workerDelete(a.worker);
         break;
       case 'K8S_CORDON':
-      case 'K8S_UNCORDON':
+      case 'K8S_UNCORDON': {
+        const zones = new Set(expandLocation(this.m, a.target));
         for (const w of this.workers.values())
-          if (w.id === a.target || w.zone === a.target) {
+          if (w.id === a.target || zones.has(w.zone)) {
             w.schedulable = a.type === 'K8S_UNCORDON';
             this.emitWorker(w);
           }
         this.scheduleAll();
         break;
+      }
       case 'POD_DELETE':
         this.podDelete(a.pod);
         break;
@@ -598,10 +613,16 @@ class Sim {
         this.containerCrash(a.pod);
         break;
       case 'ZONE_OUTAGE': {
-        for (const w of this.workers.values()) if (w.zone === a.zone) this.workerFail(w.id);
-        const others = this.m.regions.map((r) => r.id).filter((r) => r !== a.zone);
+        // a zone, or a whole region (all of its zones)
+        const out = expandLocation(this.m, a.zone);
+        for (const w of this.workers.values()) if (out.includes(w.zone)) this.workerFail(w.id);
+        // VM clusters: everything placed there loses power
+        for (const n of this.nodes.values()) if (out.includes(n.region) && !this.pods.has(n.id) && n.kind !== 'producer' && n.kind !== 'consumer') this.killNode(n.id, `${a.zone} outage`);
+        const others = locationsOf(this.m)
+          .map((l) => l.id)
+          .filter((l) => !out.includes(l));
         if (others.length) {
-          this.groups = [others, [a.zone]];
+          this.groups = [others, out];
           this.emit({ t: this.now, type: 'NETWORK', partitioned: true, groups: this.groups });
         }
         break;
@@ -609,7 +630,9 @@ class Sim {
       case 'ZONE_RECOVER':
         this.groups = null;
         this.emit({ t: this.now, type: 'NETWORK', partitioned: false });
-        for (const w of this.workers.values()) if (w.zone === a.zone) this.workerRecover(w.id);
+        const back = expandLocation(this.m, a.zone);
+        for (const w of this.workers.values()) if (back.includes(w.zone)) this.workerRecover(w.id);
+        for (const n of this.nodes.values()) if (back.includes(n.region) && !this.pods.has(n.id) && n.status === 'dead') this.restartNode(n.id, `${a.zone} recovered`);
         break;
       case 'PAUSE_NODE': {
         const n = this.nodes.get(a.node)!;

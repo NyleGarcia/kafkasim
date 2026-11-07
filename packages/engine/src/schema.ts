@@ -14,10 +14,44 @@ const Id = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/, 'ids: [A-Za-z0-9_.-]');
 
 // ---------------------------------------------------------------- topology
 
+export const Zone = z.object({ id: Id, name: z.string().optional() });
+
+/**
+ * A region, optionally split into availability zones. Nodes, clients and k8s
+ * workers are placed in a *location*: a zone id, or the region id itself when
+ * the region has no zones (single-location region — the pre-zones model).
+ */
 export const Region = z.object({
   id: Id,
   name: z.string().optional(),
+  zones: z.array(Zone).min(1).optional(),
 });
+export type RegionT = z.output<typeof Region>;
+
+export interface Location {
+  id: string;
+  name: string;
+  region: string;
+  regionName: string;
+  /** true when the location is an AZ inside a multi-zone region */
+  isZone: boolean;
+}
+
+/** Flattened placement locations, in display order (regions, then their zones). */
+export function locationsOf(m: { regions: RegionT[] }): Location[] {
+  return m.regions.flatMap((r): Location[] =>
+    r.zones?.length
+      ? r.zones.map((z) => ({ id: z.id, name: z.name ?? z.id, region: r.id, regionName: r.name ?? r.id, isZone: true }))
+      : [{ id: r.id, name: r.name ?? r.id, region: r.id, regionName: r.name ?? r.id, isZone: false }],
+  );
+}
+
+/** Location ids covered by an id that may be a region or a location. */
+export function expandLocation(m: { regions: RegionT[] }, id: string): string[] {
+  const locs = locationsOf(m);
+  const inRegion = locs.filter((l) => l.region === id).map((l) => l.id);
+  return inRegion.length ? inRegion : locs.some((l) => l.id === id) ? [id] : [];
+}
 
 export const ClusterConfig = z.object({
   /** replica.lag.time.max.ms — follower not caught up for this long leaves ISR. */
@@ -189,7 +223,7 @@ export const Action = z.discriminatedUnion('type', [
   z.object({ type: z.literal('POD_DELETE'), at: At, pod: Id }),
   /** process crash: kubelet restarts the container in place with exponential backoff */
   z.object({ type: z.literal('CONTAINER_CRASH'), at: At, pod: Id }),
-  /** every worker in the zone fails and the zone is cut off */
+  /** every worker in the zone (or in every zone of a region) fails and it is cut off */
   z.object({ type: z.literal('ZONE_OUTAGE'), at: At, zone: Id }),
   z.object({ type: z.literal('ZONE_RECOVER'), at: At, zone: Id }),
 ]);
@@ -207,7 +241,10 @@ export const Manifest = z.object({
   regions: z.array(Region).min(1),
   latency: z
     .object({
+      /** Same location (same AZ, or same zoneless region). */
       intraRegionMs: z.number().nonnegative().default(1),
+      /** Between availability zones of the same region. */
+      interZoneMs: z.number().nonnegative().default(1.5),
       /** Default between regions not listed in `links`. */
       interRegionMs: z.number().nonnegative().default(30),
       /** +/- uniform jitter fraction applied per message. */
@@ -324,7 +361,24 @@ export function parseManifest(input: unknown): Manifest {
 /** Cross-reference checks zod can't express. Throws with every problem listed. */
 export function validateRefs(m: Manifest): void {
   const errs: string[] = [];
-  const regions = new Set(m.regions.map((r) => r.id));
+  const locs = locationsOf(m);
+  // `regions` = valid placement locations (zones, or zoneless regions)
+  const regions = new Set(locs.map((l) => l.id));
+  const regionIds = new Set(m.regions.map((r) => r.id));
+  const anyLoc = (id: string) => regions.has(id) || regionIds.has(id);
+  {
+    const seen = new Set<string>();
+    for (const id of [...m.regions.map((r) => r.id), ...m.regions.flatMap((r) => (r.zones ?? []).map((z) => z.id))]) {
+      if (seen.has(id)) errs.push(`duplicate region/zone id "${id}"`);
+      seen.add(id);
+    }
+  }
+  const where = (owner: string, loc: string) => {
+    if (regions.has(loc)) return;
+    const r = m.regions.find((x) => x.id === loc);
+    errs.push(r?.zones ? `${owner}: region "${loc}" has zones; place it in one of ${r.zones.map((z) => z.id).join(', ')}` : `${owner}: unknown region/zone "${loc}"`);
+  };
+  for (const l of m.latency.links) for (const x of [l.a, l.b]) if (!anyLoc(x)) errs.push(`latency link: unknown region/zone "${x}"`);
   const nodes = new Set<string>();
   const dup = (id: string) => {
     if (nodes.has(id)) errs.push(`duplicate node id "${id}"`);
@@ -334,7 +388,7 @@ export function validateRefs(m: Manifest): void {
   for (const c of m.clusters) {
     for (const n of [...c.controllers, ...c.brokers]) {
       dup(n.id);
-      if (!regions.has(n.region)) errs.push(`${n.id}: unknown region "${n.region}"`);
+      where(n.id, n.region);
     }
   }
   const topics = new Set<string>();
@@ -367,7 +421,7 @@ export function validateRefs(m: Manifest): void {
       errs.push(`topic ${t.name}: mirror source ${t.mirror.sourceCluster}/${t.mirror.sourceTopic} not declared`);
   for (const p of [...m.producers, ...m.consumers]) {
     dup(p.id);
-    if (!regions.has(p.region)) errs.push(`${p.id}: unknown region "${p.region}"`);
+    where(p.id, p.region);
     if (!topics.has(`${p.cluster}/${p.topic}`)) errs.push(`${p.id}: unknown topic ${p.cluster}/${p.topic}`);
   }
   const workers = new Map<string, string>(); // worker → zone
@@ -378,7 +432,7 @@ export function validateRefs(m: Manifest): void {
     for (const w of c.platform.workers) {
       if (workers.has(w.id) || nodes.has(w.id)) errs.push(`duplicate id "${w.id}" (worker)`);
       workers.set(w.id, w.zone);
-      if (!regions.has(w.zone)) errs.push(`worker ${w.id}: unknown zone "${w.zone}"`);
+      where(`worker ${w.id}`, w.zone);
     }
     for (const n of [...c.controllers, ...c.brokers]) pods.add(n.id);
     try {
@@ -391,10 +445,11 @@ export function validateRefs(m: Manifest): void {
     if ('node' in a && !nodes.has(a.node)) errs.push(`action ${a.type}@${a.at}: unknown node "${a.node}"`);
     if ('worker' in a && !workers.has(a.worker)) errs.push(`action ${a.type}@${a.at}: unknown worker "${a.worker}"`);
     if ('pod' in a && !pods.has(a.pod)) errs.push(`action ${a.type}@${a.at}: "${a.pod}" is not a Kubernetes pod`);
-    if ('target' in a && !workers.has(a.target) && !regions.has(a.target)) errs.push(`action ${a.type}@${a.at}: unknown worker/zone "${a.target}"`);
-    if ('zone' in a && !regions.has(a.zone)) errs.push(`action ${a.type}@${a.at}: unknown zone "${a.zone}"`);
+    if ('target' in a && !workers.has(a.target) && !anyLoc(a.target)) errs.push(`action ${a.type}@${a.at}: unknown worker/zone/region "${a.target}"`);
+    if ('zone' in a && !anyLoc(a.zone)) errs.push(`action ${a.type}@${a.at}: unknown zone/region "${a.zone}"`);
     if (a.type === 'PARTITION')
-      for (const g of a.groups) for (const x of g) if (!regions.has(x) && !nodes.has(x)) errs.push(`PARTITION: unknown "${x}"`);
+      for (const g of a.groups) for (const x of g) if (!anyLoc(x) && !nodes.has(x)) errs.push(`PARTITION: unknown "${x}"`);
+    if (a.type === 'SET_LATENCY') for (const x of [a.a, a.b]) if (!anyLoc(x)) errs.push(`SET_LATENCY: unknown region/zone "${x}"`);
   }
   if (errs.length) throw new Error(`manifest "${m.name}" invalid:\n  - ${errs.join('\n  - ')}`);
 }

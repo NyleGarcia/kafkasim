@@ -1,0 +1,295 @@
+{
+  "schemaVersion": 1,
+  "name": "Multi-region CFK: 2 regions × 3 AZs, region outage + Cluster Linking failover",
+  "description": "Two CFK clusters, one per region, each spread over 3 availability zones: about 1ms between AZs, 65ms between regions. Inside each region RF=3 with rack awareness keeps a replica in every AZ, so a single-AZ failure (us-east-1a at 15s) costs nothing but redundancy. us-west-2 mirrors orders over a cluster link. At 40s all of us-east-1 goes dark. At 45s the mirror is promoted, and RPO is whatever the link had not copied in the last round trip.",
+  "requiresConfluent": true,
+  "durationMs": 70000,
+  "regions": [
+    {
+      "id": "us-east-1",
+      "zones": [
+        {
+          "id": "use1-az1",
+          "name": "us-east-1a"
+        },
+        {
+          "id": "use1-az2",
+          "name": "us-east-1b"
+        },
+        {
+          "id": "use1-az3",
+          "name": "us-east-1c"
+        }
+      ]
+    },
+    {
+      "id": "us-west-2",
+      "zones": [
+        {
+          "id": "usw2-az1",
+          "name": "us-west-2a"
+        },
+        {
+          "id": "usw2-az2",
+          "name": "us-west-2b"
+        },
+        {
+          "id": "usw2-az3",
+          "name": "us-west-2c"
+        }
+      ]
+    }
+  ],
+  "latency": {
+    "intraRegionMs": 0.4,
+    "interZoneMs": 1.2,
+    "interRegionMs": 65
+  },
+  "clusters": [
+    {
+      "id": "east",
+      "flavor": "confluent",
+      "controllers": [
+        {
+          "id": "ec1",
+          "region": "use1-az1"
+        },
+        {
+          "id": "ec2",
+          "region": "use1-az2"
+        },
+        {
+          "id": "ec3",
+          "region": "use1-az3"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "eb1",
+          "region": "use1-az1"
+        },
+        {
+          "id": "eb2",
+          "region": "use1-az1"
+        },
+        {
+          "id": "eb3",
+          "region": "use1-az2"
+        },
+        {
+          "id": "eb4",
+          "region": "use1-az2"
+        },
+        {
+          "id": "eb5",
+          "region": "use1-az3"
+        },
+        {
+          "id": "eb6",
+          "region": "use1-az3"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2,
+        "replicaLagTimeMaxMs": 10000
+      },
+      "platform": {
+        "type": "kubernetes",
+        "workers": [
+          {
+            "id": "w-use1-az1-1",
+            "zone": "use1-az1"
+          },
+          {
+            "id": "w-use1-az1-2",
+            "zone": "use1-az1"
+          },
+          {
+            "id": "w-use1-az1-3",
+            "zone": "use1-az1"
+          },
+          {
+            "id": "w-use1-az2-1",
+            "zone": "use1-az2"
+          },
+          {
+            "id": "w-use1-az2-2",
+            "zone": "use1-az2"
+          },
+          {
+            "id": "w-use1-az2-3",
+            "zone": "use1-az2"
+          },
+          {
+            "id": "w-use1-az3-1",
+            "zone": "use1-az3"
+          },
+          {
+            "id": "w-use1-az3-2",
+            "zone": "use1-az3"
+          },
+          {
+            "id": "w-use1-az3-3",
+            "zone": "use1-az3"
+          }
+        ],
+        "rackAwareness": true,
+        "storage": "zoneLocked",
+        "selfBalancing": {
+          "enabled": false
+        }
+      }
+    },
+    {
+      "id": "west",
+      "flavor": "confluent",
+      "controllers": [
+        {
+          "id": "wc1",
+          "region": "usw2-az1"
+        },
+        {
+          "id": "wc2",
+          "region": "usw2-az2"
+        },
+        {
+          "id": "wc3",
+          "region": "usw2-az3"
+        }
+      ],
+      "brokers": [
+        {
+          "id": "wb1",
+          "region": "usw2-az1"
+        },
+        {
+          "id": "wb2",
+          "region": "usw2-az1"
+        },
+        {
+          "id": "wb3",
+          "region": "usw2-az2"
+        },
+        {
+          "id": "wb4",
+          "region": "usw2-az2"
+        },
+        {
+          "id": "wb5",
+          "region": "usw2-az3"
+        },
+        {
+          "id": "wb6",
+          "region": "usw2-az3"
+        }
+      ],
+      "config": {
+        "minInsyncReplicas": 2,
+        "replicaLagTimeMaxMs": 10000
+      },
+      "platform": {
+        "type": "kubernetes",
+        "workers": [
+          {
+            "id": "w-usw2-az1-1",
+            "zone": "usw2-az1"
+          },
+          {
+            "id": "w-usw2-az1-2",
+            "zone": "usw2-az1"
+          },
+          {
+            "id": "w-usw2-az1-3",
+            "zone": "usw2-az1"
+          },
+          {
+            "id": "w-usw2-az2-1",
+            "zone": "usw2-az2"
+          },
+          {
+            "id": "w-usw2-az2-2",
+            "zone": "usw2-az2"
+          },
+          {
+            "id": "w-usw2-az2-3",
+            "zone": "usw2-az2"
+          },
+          {
+            "id": "w-usw2-az3-1",
+            "zone": "usw2-az3"
+          },
+          {
+            "id": "w-usw2-az3-2",
+            "zone": "usw2-az3"
+          },
+          {
+            "id": "w-usw2-az3-3",
+            "zone": "usw2-az3"
+          }
+        ],
+        "rackAwareness": true,
+        "storage": "zoneLocked",
+        "selfBalancing": {
+          "enabled": false
+        }
+      }
+    }
+  ],
+  "topics": [
+    {
+      "cluster": "east",
+      "name": "orders",
+      "partitions": 3,
+      "replicationFactor": 3
+    },
+    {
+      "cluster": "west",
+      "name": "orders",
+      "partitions": 3,
+      "replicationFactor": 3,
+      "mirror": {
+        "type": "cluster_link",
+        "sourceCluster": "east",
+        "sourceTopic": "orders",
+        "fetchIntervalMs": 500
+      }
+    }
+  ],
+  "producers": [
+    {
+      "id": "shop",
+      "cluster": "east",
+      "region": "use1-az2",
+      "topic": "orders",
+      "acks": "all",
+      "ratePerSec": 50
+    }
+  ],
+  "consumers": [
+    {
+      "id": "analytics",
+      "cluster": "east",
+      "region": "use1-az3",
+      "group": "analytics",
+      "topic": "orders"
+    }
+  ],
+  "actions": [
+    {
+      "type": "ZONE_OUTAGE",
+      "at": 15000,
+      "zone": "use1-az1"
+    },
+    {
+      "type": "ZONE_OUTAGE",
+      "at": 40000,
+      "zone": "us-east-1"
+    },
+    {
+      "type": "FAILOVER",
+      "at": 45000,
+      "cluster": "west",
+      "topic": "orders"
+    }
+  ]
+}

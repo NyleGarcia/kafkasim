@@ -43,6 +43,17 @@ The engine (`packages/engine/src/engine.ts`) is a deterministic discrete-event m
 | MRC observers *(Confluent)* | observers replicate but are never in the ISR unless `observerPromotionPolicy=under-min-isr` and ISR < min.insync; demoted when sync replicas return | CP docs |
 | MirrorMaker 2 *(Apache)* | Connect worker consumes ≤ HW, produces with acks=all; offsets not preserved | KIP-382 |
 
+## Regions and availability zones
+
+A region may list `zones`. Nodes, clients and Kubernetes workers are placed in a **location**: an AZ id, or the region id when the region has no zones (the original single-location model; every older manifest still works).
+
+| | Rule |
+|---|---|
+| Latency | same location → `intraRegionMs`; another AZ of the same region → `interZoneMs`; another region → `links[regionA,regionB]`, else `interRegionMs`. A link between two locations overrides all of these |
+| Partitions | `PARTITION` groups may name nodes, AZs or regions; the most specific id wins (node > AZ > region) |
+| Outage | `ZONE_OUTAGE` takes an AZ or a whole region: Kubernetes workers fail, VM nodes lose power, and the area is cut off. `ZONE_RECOVER` reverses it |
+| Rack | rack awareness uses the location, so RF=3 over 3 AZs gives one replica per AZ |
+
 ## Kubernetes / CFK platform (`cluster.platform`)
 
 Optional per cluster. Spec: [k8s-cfk](../plans/specs/k8s-cfk.md). A manifest region is a Kubernetes zone. Each controller and broker is a StatefulSet pod placed on a worker node.

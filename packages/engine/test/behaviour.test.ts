@@ -330,3 +330,50 @@ describe('Kubernetes / CFK platform', () => {
     expect(end.partitions['cfk/payments/0']!.isr).toContain('b5');
   });
 });
+
+describe('regions with availability zones', () => {
+  const multi = () => byName('Multi-region CFK');
+
+  it('nodes must be placed in a zone when their region has zones', () => {
+    const bad = multi();
+    bad.clusters[0]!.brokers[0]!.region = 'us-east-1';
+    expect(() => parseManifest(bad)).toThrow(/region "us-east-1" has zones; place it in one of use1-az1/);
+    const dup = multi();
+    dup.regions[1]!.zones![0]!.id = 'use1-az1';
+    expect(() => parseManifest(dup)).toThrow(/duplicate region\/zone id "use1-az1"/);
+  });
+
+  it('three latency tiers: same AZ < cross-AZ < cross-region', () => {
+    const r = run(multi());
+    const loc = new Map<string, string>();
+    for (const c of r.m.clusters) for (const n of [...c.controllers, ...c.brokers]) loc.set(n.id, n.region);
+    for (const p of [...r.m.producers, ...r.m.consumers]) loc.set(p.id, p.region);
+    const regionOf = (l: string) => (l.startsWith('use1') ? 'east' : 'west');
+    const tiers = { same: [] as number[], az: [] as number[], region: [] as number[] };
+    for (const e of of(r.events, 'MSG')) {
+      const a = loc.get(e.from), b = loc.get(e.to);
+      if (!a || !b) continue;
+      (a === b ? tiers.same : regionOf(a) === regionOf(b) ? tiers.az : tiers.region).push(e.arriveT - e.t);
+    }
+    const max = (xs: number[]) => Math.max(...xs);
+    const min = (xs: number[]) => Math.min(...xs);
+    expect(tiers.same.length && tiers.az.length && tiers.region.length).toBeTruthy();
+    expect(max(tiers.same)).toBeLessThan(min(tiers.az)); // 0.4ms ±10% vs 1.2ms ±10%
+    expect(max(tiers.az)).toBeLessThan(min(tiers.region)); // vs 65ms
+    expect(min(tiers.region)).toBeGreaterThan(55);
+  });
+
+  it('AZ outage inside a region keeps serving (rack-aware RF=3); region outage takes the whole region down', () => {
+    const r = run(multi());
+    expect(sum(of(r.events, 'PRODUCE_ACK').filter((e) => e.t > 15_000 && e.t < 40_000))).toBeGreaterThan(1_000);
+    const net = of(r.events, 'NETWORK').find((e) => e.t === 40_000)!;
+    expect(net.groups![1]!.sort()).toEqual(['use1-az1', 'use1-az2', 'use1-az3']);
+    const promoted = of(r.events, 'MIRROR_PROMOTED');
+    expect(promoted).toHaveLength(3);
+    expect(promoted.reduce((a, e) => a + e.rpoRecords, 0)).toBeLessThan(20);
+  });
+
+  it('zoneless regions still work as single locations (backward compatible)', () => {
+    for (const s of scenarios.filter((x) => !x.regions.some((r) => r.zones))) expect(() => parseManifest(s)).not.toThrow();
+  });
+});

@@ -4,7 +4,7 @@
 
 **▶ [nylegarcia.github.io/kafkasim](https://nylegarcia.github.io/kafkasim/)**
 
-- **Simulate.** Thirteen scenarios (broker failure, acks=1 vs acks=all, `min.insync.replicas`, zombie leader, unclean election, stretch-cluster partition, MirrorMaker 2 DR, plus Confluent Cluster Linking, MRC observers and four CFK-on-Kubernetes scenarios, labelled). Build your own in the visual **scenario builder**: regions, clusters, topics, clients, Kubernetes and timed faults, no JSON needed. Watch every produce, fetch, heartbeat and vote move between nodes. Scrub the timeline, or click any broker to kill, pause or isolate it at that moment.
+- **Simulate.** Fourteen scenarios (broker failure, acks=1 vs acks=all, `min.insync.replicas`, zombie leader, unclean election, stretch-cluster partition, MirrorMaker 2 DR, plus Confluent Cluster Linking, MRC observers and four CFK-on-Kubernetes scenarios, labelled). Build your own in the visual **scenario builder**: regions, clusters, topics, clients, Kubernetes and timed faults, no JSON needed. Watch every produce, fetch, heartbeat and vote move between nodes. Scrub the timeline, or click any broker to kill, pause or isolate it at that moment.
 - **Replay.** Load an event log recorded from real Kafka (or exported from a simulation). Same renderer, same schema.
 - **Live.** Run `kafkasim-bridge` next to your cluster and watch its leaders, ISRs and high watermarks change in real time.
 
@@ -24,6 +24,8 @@ Replication and failure:
 Cross-cluster:
 - Cluster Linking and MRC observers *(Confluent Platform)*
 - MirrorMaker 2 *(Apache)*
+
+Topology: regions containing availability zones. Latency has three tiers (same AZ, cross-AZ, cross-region), and an outage or partition can hit one AZ or a whole region.
 
 On Kubernetes (Confluent for Kubernetes):
 - StatefulSet pods, zone-locked PVCs, and worker nodes that are schedulable only in some AZs

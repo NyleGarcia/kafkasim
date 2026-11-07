@@ -110,4 +110,41 @@ describe('scenario builder draft ops', () => {
     expect(d.actions.every((a) => !/K8S|POD|CONTAINER|ZONE/.test(a.type))).toBe(true);
     valid(d);
   });
+
+  it('zones: split a region into 3 AZs moves its placements into the first AZ; spread brokers per AZ', () => {
+    let d = D.splitRegion(D.blankDraft(), 'dc1');
+    expect(d.regions[0]!.zones!.map((z) => z.id)).toEqual(['dc1-a', 'dc1-b', 'dc1-c']);
+    expect(d.clusters[0]!.brokers.every((b) => b.region === 'dc1-a')).toBe(true);
+    expect(d.producers[0]!.region).toBe('dc1-a');
+    valid(d);
+    d = ok(D.setNodeCount(d, 'main', 'brokers', 'dc1-b', 2));
+    d = ok(D.setNodeCount(d, 'main', 'brokers', 'dc1-c', 2));
+    valid(d);
+    expect(new Set(d.clusters[0]!.brokers.map((b) => b.region)).size).toBe(3);
+  });
+
+  it('zones: removing an AZ drops its nodes; removing the last AZ turns the region back into one location', () => {
+    let d = D.splitRegion(D.blankDraft(), 'dc1');
+    d = ok(D.setNodeCount(d, 'main', 'brokers', 'dc1-b', 1));
+    d = ok(D.removeZone(d, 'dc1', 'dc1-b'));
+    expect(d.clusters[0]!.brokers.some((b) => b.region === 'dc1-b')).toBe(false);
+    d = ok(D.removeZone(d, 'dc1', 'dc1-c'));
+    d = ok(D.removeZone(d, 'dc1', 'dc1-a'));
+    expect(d.regions[0]!.zones).toBeUndefined();
+    expect(d.clusters[0]!.brokers.every((b) => b.region === 'dc1')).toBe(true);
+    valid(d);
+  });
+
+  it('zones: refuses to remove the AZ holding all of a cluster\'s brokers', () => {
+    const d = D.splitRegion(D.blankDraft(), 'dc1');
+    expect(typeof D.removeZone(d, 'dc1', 'dc1-a')).toBe('string');
+  });
+
+  it('zones: Kubernetes workers are created per AZ', () => {
+    let d = D.splitRegion(D.addRegion(D.blankDraft()), 'dc1');
+    d = ok(D.setNodeCount(d, 'main', 'brokers', 'dc1-b', 1));
+    d = D.setPlatform(d, 'main', true);
+    expect(new Set(d.clusters[0]!.platform!.workers.map((w) => w.zone))).toEqual(new Set(['dc1-a', 'dc1-b']));
+    valid(d);
+  });
 });

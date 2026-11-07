@@ -77,7 +77,7 @@ export function TopologyCanvas({ manifest, timeline, tRef, speed, highlightTp, s
   };
 
   return (
-    <div ref={wrap} className="relative w-full">
+    <div ref={wrap} className="relative w-full overflow-x-auto">
       <canvas
         ref={canvas}
         role="img"

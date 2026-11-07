@@ -4,7 +4,7 @@
  * never leave dangling ids behind (topics → removed brokers, clients → removed
  * topics, actions → removed nodes, …). Validation is the engine's own parser.
  */
-import { assignReplicas, Cluster, Consumer, Manifest, Platform, Producer, Topic, validateRefs, type ActionT, type ClusterT, type ConsumerT, type ProducerT, type TopicT } from '@kafkasim/engine';
+import { assignReplicas, Cluster, Consumer, expandLocation, locationsOf, Manifest, Platform, Producer, Topic, validateRefs, type ActionT, type ClusterT, type ConsumerT, type ProducerT, type TopicT } from '@kafkasim/engine';
 
 export type Draft = Manifest;
 
@@ -16,6 +16,7 @@ const edit = (d: Draft, fn: (x: Draft) => void): Draft => {
 
 export function allIds(d: Draft): Set<string> {
   const s = new Set<string>(d.regions.map((r) => r.id));
+  for (const r of d.regions) for (const z of r.zones ?? []) s.add(z.id);
   for (const c of d.clusters) {
     s.add(c.id);
     for (const n of [...c.controllers, ...c.brokers]) s.add(n.id);
@@ -85,7 +86,8 @@ function scrub(x: Draft) {
   const nodes = new Set<string>();
   for (const c of x.clusters) for (const id of nodeIdsOf(c)) nodes.add(id);
   for (const p of [...x.producers, ...x.consumers]) nodes.add(p.id);
-  const regions = new Set(x.regions.map((r) => r.id));
+  // anything a region-or-zone reference may point at
+  const regions = new Set([...x.regions.map((r) => r.id), ...locationsOf(x).map((l) => l.id)]);
   for (const t of x.topics) {
     const c = x.clusters.find((k) => k.id === t.cluster);
     if (!c) continue;
@@ -134,23 +136,106 @@ export function addRegion(d: Draft) {
 
 export const renameRegion = (d: Draft, id: string, name: string) => edit(d, (x) => (x.regions.find((r) => r.id === id)!.name = name));
 
+/** Placement locations (zones, or zoneless regions) — what nodes/clients/workers reference. */
+export const locations = (d: Draft) => locationsOf(d);
+const firstLoc = (x: Draft) => locationsOf(x)[0]!.id;
+
+/** Move every placement (nodes, clients, workers, MM2 worker) from one location to another. */
+function relocate(x: Draft, from: Set<string>, to: string) {
+  for (const c of x.clusters) {
+    for (const n of [...c.controllers, ...c.brokers]) if (from.has(n.region)) n.region = to;
+    for (const w of c.platform?.workers ?? []) if (from.has(w.zone)) w.zone = to;
+  }
+  for (const p of [...x.producers, ...x.consumers]) if (from.has(p.region)) p.region = to;
+  for (const t of x.topics) if (t.mirror?.workerRegion && from.has(t.mirror.workerRegion)) t.mirror.workerRegion = to;
+}
+
+/** Returns an error string when removing these locations would leave a cluster with no controllers/brokers. */
+function emptiesCluster(d: Draft, gone: Set<string>, label: string): string | null {
+  for (const c of d.clusters) {
+    if (c.controllers.every((n) => gone.has(n.region))) return `Cluster ${c.id} has all its controllers in ${label}. Move or add controllers elsewhere first.`;
+    if (c.brokers.every((n) => gone.has(n.region))) return `Cluster ${c.id} has all its brokers in ${label}. Move or add brokers elsewhere first.`;
+  }
+  return null;
+}
+
+function dropLocations(x: Draft, gone: Set<string>) {
+  for (const c of x.clusters) {
+    c.controllers = c.controllers.filter((n) => !gone.has(n.region));
+    c.brokers = c.brokers.filter((n) => !gone.has(n.region));
+    if (c.platform) c.platform.workers = c.platform.workers.filter((w) => !gone.has(w.zone));
+  }
+  const fallback = firstLoc(x);
+  for (const p of [...x.producers, ...x.consumers]) if (gone.has(p.region)) p.region = fallback;
+  for (const t of x.topics) if (t.mirror?.workerRegion && gone.has(t.mirror.workerRegion)) delete t.mirror.workerRegion;
+  x.actions = x.actions.filter((a) => !(('worker' in a && !x.clusters.some((c) => c.platform?.workers.some((w) => w.id === a.worker))) || ('target' in a && gone.has(a.target)) || ('zone' in a && gone.has(a.zone))));
+  scrub(x);
+}
+
 /** Returns an error string instead of a draft when the removal would leave a cluster empty. */
 export function removeRegion(d: Draft, id: string): Draft | string {
   if (d.regions.length === 1) return 'A scenario needs at least one region.';
-  for (const c of d.clusters) {
-    if (c.controllers.every((n) => n.region === id)) return `Cluster ${c.id} has all its controllers in ${id}. Move or add controllers elsewhere first.`;
-    if (c.brokers.every((n) => n.region === id)) return `Cluster ${c.id} has all its brokers in ${id}. Move or add brokers elsewhere first.`;
-  }
+  const gone = new Set(expandLocation(d, id));
+  const err = emptiesCluster(d, gone, id);
+  if (err) return err;
   return edit(d, (x) => {
     x.regions = x.regions.filter((r) => r.id !== id);
-    const fallback = x.regions[0]!.id;
-    for (const c of x.clusters) {
-      c.controllers = c.controllers.filter((n) => n.region !== id);
-      c.brokers = c.brokers.filter((n) => n.region !== id);
-    }
-    for (const p of [...x.producers, ...x.consumers]) if (p.region === id) p.region = fallback;
-    for (const t of x.topics) if (t.mirror?.workerRegion === id) delete t.mirror.workerRegion;
-    scrub(x);
+    dropLocations(x, gone);
+  });
+}
+
+// ------------------------------------------------------------------ availability zones
+
+const letters = 'abcdefghij';
+
+/** Split a zoneless region into 3 AZs; everything placed in the region moves to the first AZ. */
+export function splitRegion(d: Draft, regionId: string, count = 3) {
+  return edit(d, (x) => {
+    const r = x.regions.find((k) => k.id === regionId)!;
+    if (r.zones?.length) return;
+    const taken = allIds(x);
+    r.zones = Array.from({ length: count }, (_, i) => {
+      const want = `${regionId}-${letters[i]}`;
+      const zid = taken.has(want) ? uniqueId(x, want, taken) : want;
+      taken.add(zid);
+      return { id: zid, name: `${r.name ?? r.id}${letters[i]}` };
+    });
+    relocate(x, new Set([regionId]), r.zones[0]!.id);
+  });
+}
+
+export function addZone(d: Draft, regionId: string) {
+  const r = d.regions.find((k) => k.id === regionId)!;
+  if (!r.zones?.length) return splitRegion(d, regionId, 2);
+  return edit(d, (x) => {
+    const xr = x.regions.find((k) => k.id === regionId)!;
+    const i = xr.zones!.length;
+    const want = `${regionId}-${letters[i] ?? 'z'}`;
+    const zid = allIds(x).has(want) ? uniqueId(x, want) : want;
+    xr.zones!.push({ id: zid, name: `${xr.name ?? xr.id}${letters[i] ?? i}` });
+  });
+}
+
+export const renameZone = (d: Draft, regionId: string, zoneId: string, name: string) =>
+  edit(d, (x) => (x.regions.find((k) => k.id === regionId)!.zones!.find((z) => z.id === zoneId)!.name = name));
+
+/** Remove an AZ. Removing the last AZ turns the region back into a single location. */
+export function removeZone(d: Draft, regionId: string, zoneId: string): Draft | string {
+  const r = d.regions.find((k) => k.id === regionId)!;
+  if (r.zones!.length === 1)
+    return edit(d, (x) => {
+      const xr = x.regions.find((k) => k.id === regionId)!;
+      delete xr.zones;
+      relocate(x, new Set([zoneId]), regionId);
+      scrub(x);
+    });
+  const gone = new Set([zoneId]);
+  const err = emptiesCluster(d, gone, zoneId);
+  if (err) return err;
+  return edit(d, (x) => {
+    const xr = x.regions.find((k) => k.id === regionId)!;
+    xr.zones = xr.zones!.filter((z) => z.id !== zoneId);
+    dropLocations(x, gone);
   });
 }
 
@@ -161,7 +246,7 @@ export function addCluster(d: Draft) {
     const taken = allIds(x);
     const id = uniqueId(x, 'cluster', taken);
     taken.add(id);
-    const region = x.regions[0]!.id;
+    const region = firstLoc(x);
     const mk = (prefix: string) => {
       const nid = uniqueId(x, prefix, taken);
       taken.add(nid);
@@ -447,7 +532,7 @@ export function setPlatform(d: Draft, clusterId: string, on: boolean) {
     const taken = allIds(x);
     const workers: { id: string; zone: string }[] = [];
     // one worker per Kafka pod in each zone, plus one spare so pods can move
-    for (const r of x.regions) {
+    for (const r of locationsOf(x)) {
       const n = [...c.controllers, ...c.brokers].filter((k) => k.region === r.id).length;
       for (let i = 0; i < (n ? n + 1 : 0); i++) {
         const id = uniqueId(x, `w-${r.id}-`, taken);

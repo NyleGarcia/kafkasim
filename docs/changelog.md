@@ -8,6 +8,12 @@ updated: 2026-11-07
 
 ## Unreleased
 
+- Regions with availability zones:
+  - Three latency tiers (same AZ / cross-AZ / cross-region).
+  - AZ- or region-wide outages and partitions; rack placement per AZ.
+  - Canvas region bands with AZ columns; builder zone editing (split a region into AZs, add/rename/remove AZs).
+  - New multi-region × 3-AZ CFK scenario with region outage and Cluster Linking failover.
+
 - Kubernetes / CFK platform layer:
   - StatefulSet pods on worker nodes per AZ, with zone-locked or ephemeral PVCs and schedulable/capacity per worker.
   - kubelet restarts with CrashLoopBackOff; pod delete with controlled shutdown; stuck `Unknown` pods on failed nodes; AZ outage.
