@@ -8,6 +8,10 @@ updated: 2026-11-07
 
 ## Unreleased
 
+- Rack awareness per cluster (per AZ / per region / off) for VMs and Kubernetes. Confluent Replica Placement Policies (`confluent.placement.constraints`) per topic, with a builder editor and a live assignment preview. The MRC scenario now uses an RPP.
+- Up to 64 controllers, brokers or workers per location, with typeable counts. The canvas uses a fixed-pitch wrapping grid, so adding a node never moves existing ones. The builder tables have fixed columns.
+- Followers long-poll from t=0, which removes a startup latency artifact.
+
 - Regions with availability zones:
   - Three latency tiers (same AZ / cross-AZ / cross-region).
   - AZ- or region-wide outages and partitions; rack placement per AZ.

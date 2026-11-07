@@ -139,16 +139,32 @@ export function CheckField({ label, hint, checked, onChange, disabled }: { label
   );
 }
 
-/** − n + stepper, used for "brokers in region". */
-export function Stepper({ label, value, onChange, min = 0, max = 9 }: { label: string; value: number; onChange: (n: number) => void; min?: number; max?: number }) {
+/** − n + stepper with a typeable count (commits on blur / Enter). Fixed width so tables don't reflow. */
+export function Stepper({ label, value, onChange, min = 0, max = 64 }: { label: string; value: number; onChange: (n: number) => void; min?: number; max?: number }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const n = Math.round(Number(draft));
+    setDraft(null);
+    if (Number.isFinite(n) && n !== value) onChange(Math.max(min, Math.min(max, n)));
+  };
   return (
-    <div className="flex items-center gap-1" role="group" aria-label={label}>
+    <div className="flex w-[104px] shrink-0 items-center gap-1" role="group" aria-label={label}>
       <Button type="button" size="icon-xs" variant="outline" disabled={value <= min} onClick={() => onChange(value - 1)} aria-label={`fewer ${label}`}>
         <Minus />
       </Button>
-      <span className="readout w-5 text-center text-sm" aria-live="polite">
-        {value}
-      </span>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={min}
+        max={max}
+        aria-label={label}
+        value={draft ?? value}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === 'Enter' && commit()}
+        className="readout h-6 w-10 [appearance:textfield] rounded border bg-transparent text-center text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
+      />
       <Button type="button" size="icon-xs" variant="outline" disabled={value >= max} onClick={() => onChange(value + 1)} aria-label={`more ${label}`}>
         <Plus />
       </Button>

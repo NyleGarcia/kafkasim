@@ -52,7 +52,8 @@ A region may list `zones`. Nodes, clients and Kubernetes workers are placed in a
 | Latency | same location → `intraRegionMs`; another AZ of the same region → `interZoneMs`; another region → `links[regionA,regionB]`, else `interRegionMs`. A link between two locations overrides all of these |
 | Partitions | `PARTITION` groups may name nodes, AZs or regions; the most specific id wins (node > AZ > region) |
 | Outage | `ZONE_OUTAGE` takes an AZ or a whole region: Kubernetes workers fail, VM nodes lose power, and the area is cut off. `ZONE_RECOVER` reverses it |
-| Rack | rack awareness uses the location, so RF=3 over 3 AZs gives one replica per AZ |
+| Rack | `cluster.rack`: `zone` (default; broker.rack = its AZ/location), `region` (broker.rack = its region), or `none`. An explicit broker `rack` overrides it. Auto placement interleaves racks, so RF=3 over 3 AZs gives one replica per AZ |
+| Replica Placement Policy *(Confluent)* | `topic.placement` = `confluent.placement.constraints`: `{replicas: [{count, rack}], observers: [{count, rack}]}`. Each partition takes `count` brokers from each rack, rotating the start per partition so leaders spread. It replaces RF, explicit replicas and observers. Validated: known racks, enough brokers per rack, Confluent flavor, rack mode not `none` |
 
 ## Kubernetes / CFK platform (`cluster.platform`)
 

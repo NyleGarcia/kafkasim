@@ -8,7 +8,7 @@ const brokers = (ids: string[], region: string) => ids.map((id) => ({ id, region
 
 /** CFK cluster over 3 AZs: 1 controller + 2 brokers per AZ, `workersPerZone` workers (capacity 1) per AZ. */
 const cfk = (
-  opts: { id?: string; zones?: string[]; prefix?: string; workersPerZone?: number[]; rackAwareness?: boolean; selfBalancingMs?: number; storage?: 'zoneLocked' | 'ephemeral' } = {},
+  opts: { id?: string; zones?: string[]; prefix?: string; workersPerZone?: number[]; rack?: 'zone' | 'region' | 'none'; selfBalancingMs?: number; storage?: 'zoneLocked' | 'ephemeral' } = {},
 ) => {
   const zones = opts.zones ?? ['az1', 'az2', 'az3'];
   const px = opts.prefix ?? '';
@@ -19,10 +19,10 @@ const cfk = (
     controllers: zones.map((z, i) => ({ id: `${px}c${i + 1}`, region: z })),
     brokers: zones.flatMap((z, i) => [{ id: `${px}b${2 * i + 1}`, region: z }, { id: `${px}b${2 * i + 2}`, region: z }]),
     config: { minInsyncReplicas: 2, replicaLagTimeMaxMs: 10_000 },
+    rack: opts.rack ?? 'zone',
     platform: {
       type: 'kubernetes' as const,
       workers: zones.flatMap((z, i) => Array.from({ length: wpz[i]! }, (_, k) => ({ id: `w-${z}-${k + 1}`, zone: z }))),
-      rackAwareness: opts.rackAwareness ?? true,
       storage: opts.storage ?? 'zoneLocked',
       selfBalancing: opts.selfBalancingMs ? { enabled: true, brokerFailureThresholdMs: opts.selfBalancingMs } : { enabled: false },
     },
@@ -252,7 +252,7 @@ export const scenarios: ManifestInput[] = [
     schemaVersion: 1,
     name: 'MRC observers + promotion (Confluent)',
     description:
-      'Confluent Multi-Region Cluster: sync replicas in east, async observers in west (outside the ISR, so they add no WAN latency to acks=all). When east loses brokers and the ISR drops below min.insync, observerPromotionPolicy=under-min-isr adds caught-up observers to the ISR so writes continue.',
+      'Confluent Multi-Region Cluster with a Replica Placement Policy: 2 sync replicas in rack east, 2 async observers in rack west (outside the ISR, so they add no WAN latency to acks=all). When east loses brokers and the ISR drops below min.insync, observerPromotionPolicy=under-min-isr adds caught-up observers to the ISR so writes continue.',
     requiresConfluent: true,
     durationMs: 45_000,
     regions: [
@@ -280,8 +280,8 @@ export const scenarios: ManifestInput[] = [
         cluster: 'mrc',
         name: 'payments',
         partitions: 1,
-        replicas: [['e1', 'e2']],
-        observers: [['w1', 'w2']],
+        // Replica Placement Policy (confluent.placement.constraints)
+        placement: { replicas: [{ count: 2, rack: 'east' }], observers: [{ count: 2, rack: 'west' }] },
         observerPromotionPolicy: 'under-min-isr',
       },
     ],
@@ -336,7 +336,7 @@ export const scenarios: ManifestInput[] = [
     durationMs: 60_000,
     regions: azs,
     latency: azLatency,
-    clusters: [cfk({ rackAwareness: false })],
+    clusters: [cfk({ rack: 'none' })],
     topics: [{ cluster: 'cfk', name: 'orders', partitions: 6, replicationFactor: 2, minInsyncReplicas: 1 }],
     producers: [{ id: 'checkout', cluster: 'cfk', region: 'az2', topic: 'orders', acks: 'all', ratePerSec: 40 }],
     actions: [{ type: 'ZONE_OUTAGE', at: 10_000, zone: 'az1' }],

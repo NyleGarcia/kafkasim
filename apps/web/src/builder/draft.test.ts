@@ -166,4 +166,37 @@ describe('scenario builder draft ops', () => {
     expect(d.clusters[0]!.platform!.workers.every((w) => w.zone === 'dc1-b')).toBe(true);
     valid(d);
   });
+
+  it('placement modes round-trip: auto → custom → RPP → auto stays valid and keeps the replica count', () => {
+    let d = D.patchCluster(D.splitRegion(D.blankDraft(), 'dc1'), 'main', { flavor: 'confluent' });
+    d = ok(D.setNodeCount(d, 'main', 'brokers', 'dc1-b', 2));
+    d = ok(D.setNodeCount(d, 'main', 'brokers', 'dc1-c', 2));
+    d = D.setPlacementMode(d, 'main', 'orders', 'custom');
+    valid(d);
+    d = D.setPlacementMode(d, 'main', 'orders', 'rpp');
+    expect(d.topics[0]!.placement!.replicas.map((r) => r.rack).sort()).toEqual(['dc1-a', 'dc1-b', 'dc1-c']);
+    valid(d);
+    d = D.setPlacementRules(d, 'main', 'orders', [{ rack: 'dc1-a', count: 2 }], [{ rack: 'dc1-c', count: 1 }]);
+    valid(d);
+    d = D.setPlacementMode(d, 'main', 'orders', 'auto');
+    expect(d.topics[0]!.replicationFactor).toBe(2);
+    valid(d);
+  });
+
+  it('rack = region turns racks into regions; switching to apache drops RPP back to an RF', () => {
+    let d = D.patchCluster(D.blankDraft(), 'main', { flavor: 'confluent', rack: 'region' });
+    d = D.setPlacementMode(d, 'main', 'orders', 'rpp');
+    expect(d.topics[0]!.placement!.replicas).toEqual([{ rack: 'dc1', count: 3 }]);
+    d = D.patchCluster(d, 'main', { flavor: 'apache' });
+    expect(d.topics[0]!.placement).toBeUndefined();
+    expect(d.topics[0]!.replicationFactor).toBe(3);
+    valid(d);
+  });
+
+  it('more than 9 brokers per location (up to 64)', () => {
+    const d = ok(D.setNodeCount(D.blankDraft(), 'main', 'brokers', 'dc1', 30));
+    expect(d.clusters[0]!.brokers).toHaveLength(30);
+    valid(d);
+    expect(typeof D.setNodeCount(d, 'main', 'brokers', 'dc1', 65)).toBe('string');
+  });
 });

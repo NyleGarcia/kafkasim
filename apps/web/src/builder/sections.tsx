@@ -1,4 +1,4 @@
-import type { ActionT, ClusterT, TopicT } from '@kafkasim/engine';
+import { brokerRack, placementFor, rackIds, type ActionT, type ClusterT, type TopicT } from '@kafkasim/engine';
 import { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 
@@ -243,7 +243,13 @@ export function ClustersSection({ d, set }: SectionProps) {
               <div className="flex-1" />
               <RemoveButton label={`Remove cluster ${c.id}`} onClick={() => set(D.removeCluster(d, c.id))} disabled={d.clusters.length === 1} />
             </div>
-            <table className="w-full text-xs">
+            <table className="w-full table-fixed text-xs">
+              <colgroup>
+                <col className="w-[28%]" />
+                <col className="w-[120px]" />
+                <col className="w-[120px]" />
+                <col />
+              </colgroup>
               <thead>
                 <tr className="text-left text-muted-foreground">
                   <th className="pb-1 font-normal">Region / AZ</th>
@@ -258,19 +264,38 @@ export function ClustersSection({ d, set }: SectionProps) {
                   const brk = c.brokers.filter((x) => x.region === r.id);
                   return (
                     <tr key={r.id} className="border-t border-border/60">
-                      <td className="readout py-1.5">{r.isZone ? `${r.regionName} / ${r.name}` : r.name}</td>
+                      <td className="readout truncate py-1.5 pr-2" title={r.isZone ? `${r.regionName} / ${r.name}` : r.name}>
+                        {r.isZone ? `${r.regionName} / ${r.name}` : r.name}
+                      </td>
                       <td className="py-1.5">
                         <Stepper label={`controllers in ${r.id}`} value={ctl.length} onChange={(n) => set(D.setNodeCount(d, c.id, 'controllers', r.id, n))} />
                       </td>
                       <td className="py-1.5">
                         <Stepper label={`brokers in ${r.id}`} value={brk.length} onChange={(n) => set(D.setNodeCount(d, c.id, 'brokers', r.id, n))} />
                       </td>
-                      <td className="readout py-1.5 text-muted-foreground">{[...ctl, ...brk].map((x) => x.id).join(' ')}</td>
+                      <td className="readout py-1.5 break-words text-muted-foreground">{[...ctl, ...brk].map((x) => x.id).join(' ')}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+            <div className="flex flex-wrap items-end gap-3">
+              <SelectField
+                className="w-72"
+                label="Rack awareness (broker.rack)"
+                hint="Drives rack-aware replica placement and Replica Placement Policy constraints. An explicit broker rack overrides it."
+                value={c.rack}
+                onChange={(rack) => set(D.patchCluster(d, c.id, { rack }))}
+                options={[
+                  { value: 'zone', label: 'per availability zone' },
+                  { value: 'region', label: 'per region' },
+                  { value: 'none', label: 'off (placement ignores location)' },
+                ]}
+              />
+              <p className="pb-1.5 text-[11px] text-muted-foreground">
+                racks: <span className="readout">{rackIds(c, d).join(' · ')}</span>
+              </p>
+            </div>
             {voters % 2 === 0 && <p className="text-xs text-warning">{voters} controllers: an even quorum tolerates no more failures than {voters - 1}. Prefer an odd count.</p>}
             <div className="grid gap-3 sm:grid-cols-3">
               <NumberField label="min.insync.replicas" min={1} value={cfg.minInsyncReplicas} onCommit={(v) => set(D.patchClusterConfig(d, c.id, { minInsyncReplicas: v }))} />
@@ -306,7 +331,13 @@ function PlatformPanel({ d, set, c }: SectionProps & { c: ClusterT }) {
       {pf && (
         <>
           <p className="text-[11px] text-muted-foreground">Workers live in an AZ (topology.kubernetes.io/zone), or in the region itself if it has no AZs. Each Kafka pod needs a schedulable worker with free capacity in its zone (anti-affinity: 1 pod per worker by default).</p>
-          <table className="w-full text-xs">
+          <table className="w-full table-fixed text-xs">
+            <colgroup>
+              <col className="w-[24%]" />
+              <col className="w-[96px]" />
+              <col className="w-[120px]" />
+              <col />
+            </colgroup>
             <thead>
               <tr className="text-left text-muted-foreground">
                 <th className="pb-1 font-normal">Zone</th>
@@ -322,8 +353,10 @@ function PlatformPanel({ d, set, c }: SectionProps & { c: ClusterT }) {
                 const room = ws.filter((w) => w.schedulable).reduce((a, w) => a + w.capacity, 0);
                 return (
                   <tr key={r.id} className="border-t border-border/60 align-top">
-                    <td className="readout py-1.5">{r.isZone ? `${r.regionName} / ${r.name}` : r.name}</td>
-                    <td className={cn('readout py-1.5', room < podsHere && 'text-critical')}>
+                    <td className="readout truncate py-1.5 pr-2" title={r.isZone ? `${r.regionName} / ${r.name}` : r.name}>
+                      {r.isZone ? `${r.regionName} / ${r.name}` : r.name}
+                    </td>
+                    <td className={cn('readout py-1.5 whitespace-nowrap', room < podsHere && 'text-critical')}>
                       {podsHere} / room {room}
                     </td>
                     <td className="py-1.5">
@@ -359,7 +392,6 @@ function PlatformPanel({ d, set, c }: SectionProps & { c: ClusterT }) {
                 { value: 'ephemeral', label: 'ephemeral (lost on move)' },
               ]}
             />
-            <CheckField label="Rack awareness (broker.rack = zone)" checked={pf.rackAwareness} onChange={(rackAwareness) => set(D.patchPlatform(d, c.id, { rackAwareness }))} />
             <NumberField label="Pod startup" hint="Image pull, JVM start, log recovery" unit="s" scale={1000} integer={false} min={0} value={pf.podStartupMs} onCommit={(v) => set(D.patchPlatform(d, c.id, { podStartupMs: v }))} />
             <NumberField label="Node NotReady after" hint="node-monitor-grace-period" unit="s" scale={1000} integer={false} min={0} value={pf.nodeNotReadyAfterMs} onCommit={(v) => set(D.patchPlatform(d, c.id, { nodeNotReadyAfterMs: v }))} />
             <NumberField label="CrashLoop back-off base" unit="s" scale={1000} integer={false} min={0.1} value={pf.crashBackoffBaseMs} onCommit={(v) => set(D.patchPlatform(d, c.id, { crashBackoffBaseMs: v }))} />
@@ -409,11 +441,78 @@ export function TopicsSection({ d, set }: SectionProps) {
   );
 }
 
+interface RulesProps {
+  kind: 'replicas' | 'observers';
+  rules: D.Rule[];
+  racks: string[];
+  counts: Map<string, number>;
+  used: D.Rule[];
+  onChange: (next: D.Rule[]) => void;
+}
+
+function PlacementRules({ kind, rules, racks, counts, used, onChange }: RulesProps) {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11px] font-medium text-muted-foreground">{kind === 'replicas' ? 'Sync replicas (in ISR, count toward acks=all)' : 'Observers (async, outside ISR)'}</div>
+      {rules.map((r, i) => {
+        const upd = (nr: D.Rule | null) => {
+          const next = [...rules];
+          if (nr) next[i] = nr;
+          else next.splice(i, 1);
+          onChange(next);
+        };
+        return (
+          <div key={i} className="flex flex-wrap items-center gap-2">
+            <Stepper label={`${kind} count in ${r.rack}`} value={r.count} min={1} max={Math.max(1, counts.get(r.rack) ?? 1)} onChange={(count) => upd({ ...r, count })} />
+            <span className="text-xs text-muted-foreground">in rack</span>
+            <SelectField className="w-48" label="" value={r.rack} options={racks.map((x) => ({ value: x, label: `${x} (${counts.get(x) ?? 0} brokers)` }))} onChange={(rack) => upd({ ...r, rack })} />
+            <RemoveButton label={`Remove ${kind} rule ${r.rack}`} onClick={() => upd(null)} disabled={kind === 'replicas' && rules.length === 1} />
+          </div>
+        );
+      })}
+      <Button size="xs" variant="outline" onClick={() => onChange([...rules, { rack: racks.find((x) => !used.some((u) => u.rack === x)) ?? racks[0]!, count: 1 }])}>
+        <Plus /> {kind === 'replicas' ? 'replica constraint' : 'observer constraint'}
+      </Button>
+    </div>
+  );
+}
+
+/** confluent.placement.constraints editor: per-rack counts for sync replicas and observers. */
+function RppEditor({ d, set, t, c }: SectionProps & { t: TopicT; c: ClusterT }) {
+  const pl = t.placement!;
+  const racks = rackIds(c, d);
+  const counts = new Map<string, number>();
+  for (const b of c.brokers) counts.set(brokerRack(c, b, d), (counts.get(brokerRack(c, b, d)) ?? 0) + 1);
+  const put = (replicas: D.Rule[], observers: D.Rule[]) => set(D.setPlacementRules(d, t.cluster, t.name, replicas, observers));
+  const preview = placementFor(c, t, d);
+  const used = [...pl.replicas, ...pl.observers];
+  return (
+    <div className="space-y-3 rounded-md border border-observer/30 bg-observer/5 p-2">
+      <p className="text-[11px] text-muted-foreground">
+        <span className="readout">confluent.placement.constraints</span>: count + rack. Racks come from the cluster's rack mode ({c.rack}). Each partition rotates through the brokers of each rack.
+      </p>
+      <div className="grid gap-3 md:grid-cols-2">
+        <PlacementRules kind="replicas" rules={pl.replicas} racks={racks} counts={counts} used={used} onChange={(next) => put(next, pl.observers)} />
+        <PlacementRules kind="observers" rules={pl.observers} racks={racks} counts={counts} used={used} onChange={(next) => put(pl.replicas, next)} />
+      </div>
+      <p className="readout text-[11px] text-muted-foreground">
+        {preview.replicas.slice(0, 4).map((r, p) => (
+          <span key={p} className="mr-3 inline-block">
+            p{p} → [{r.join(' ')}]{preview.observers[p]!.length ? ` · obs [${preview.observers[p]!.join(' ')}]` : ''}
+          </span>
+        ))}
+        {preview.replicas.length > 4 && '…'}
+      </p>
+    </div>
+  );
+}
+
 function TopicCard({ d, set, t }: SectionProps & { t: TopicT }) {
   const c = d.clusters.find((k) => k.id === t.cluster)!;
   const brokers = c.brokers.map((b) => b.id);
   const confluent = c.flavor === 'confluent';
-  const custom = !!t.replicas;
+  const mode = D.placementMode(t);
+  const custom = mode === 'custom';
   const sources = d.topics.filter((s) => s.cluster !== t.cluster && !s.mirror);
   const patch = (p: Partial<TopicT>) => set(D.patchTopic(d, t.cluster, t.name, p));
   return (
@@ -424,13 +523,23 @@ function TopicCard({ d, set, t }: SectionProps & { t: TopicT }) {
         </Badge>
         <TextField label="Topic name" pattern={/^[A-Za-z0-9._-]+$/} value={t.name} onCommit={(n) => set(D.renameTopic(d, t.cluster, t.name, n))} className="flex-1" />
         <NumberField label="Partitions" min={1} max={12} value={t.partitions} onCommit={(partitions) => (t.mirror ? null : patch({ partitions }))} className="w-24" />
-        {!custom && <NumberField label="Replication factor" min={1} max={brokers.length} value={t.replicationFactor ?? Math.min(3, brokers.length)} onCommit={(rf) => patch({ replicationFactor: rf })} className="w-32" />}
+        {mode === 'auto' && <NumberField label="Replication factor" min={1} max={brokers.length} value={t.replicationFactor ?? Math.min(3, brokers.length)} onCommit={(rf) => patch({ replicationFactor: rf })} className="w-32" />}
         <NumberField label="min.insync override" hint={`Empty = cluster default (${c.config.minInsyncReplicas})`} min={1} value={t.minInsyncReplicas ?? c.config.minInsyncReplicas} onCommit={(v) => patch({ minInsyncReplicas: v === c.config.minInsyncReplicas ? undefined : v })} className="w-32" />
         <RemoveButton label={`Remove topic ${t.name}`} onClick={() => set(D.removeTopic(d, t.cluster, t.name))} />
       </div>
       <div className="flex flex-wrap items-end gap-3">
-        <CheckField label="Custom replica placement" checked={custom} onChange={(on) => set(D.setCustomPlacement(d, t.cluster, t.name, on))} />
-        {confluent && custom && (
+        <SelectField
+          className="w-72"
+          label="Replica placement"
+          value={mode}
+          onChange={(m) => set(D.setPlacementMode(d, t.cluster, t.name, m))}
+          options={[
+            { value: 'auto', label: 'automatic, rack-aware (replication factor)' },
+            { value: 'custom', label: 'custom per partition' },
+            { value: 'rpp', label: 'placement constraints (Confluent RPP)', disabled: !confluent || c.rack === 'none' },
+          ]}
+        />
+        {confluent && mode !== 'auto' && (
           <SelectField
             className="w-60"
             label="Observer promotion (MRC)"
@@ -443,6 +552,7 @@ function TopicCard({ d, set, t }: SectionProps & { t: TopicT }) {
           />
         )}
       </div>
+      {mode === 'rpp' && <RppEditor d={d} set={set} t={t} c={c} />}
       {custom && (
         <div className="space-y-1.5">
           {t.replicas!.map((r, p) => (

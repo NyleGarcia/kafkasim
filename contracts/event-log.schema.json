@@ -285,6 +285,15 @@
                 ],
                 "additionalProperties": false
               },
+              "rack": {
+                "default": "zone",
+                "type": "string",
+                "enum": [
+                  "zone",
+                  "region",
+                  "none"
+                ]
+              },
               "platform": {
                 "type": "object",
                 "properties": {
@@ -343,10 +352,6 @@
                       "ephemeral"
                     ]
                   },
-                  "rackAwareness": {
-                    "default": true,
-                    "type": "boolean"
-                  },
                   "podStartupMs": {
                     "default": 20000,
                     "type": "integer",
@@ -403,7 +408,6 @@
                   "operator",
                   "workers",
                   "storage",
-                  "rackAwareness",
                   "podStartupMs",
                   "nodeNotReadyAfterMs",
                   "terminationGraceMs",
@@ -419,7 +423,8 @@
               "flavor",
               "controllers",
               "brokers",
-              "config"
+              "config",
+              "rack"
             ],
             "additionalProperties": false
           }
@@ -472,6 +477,62 @@
                     "pattern": "^[A-Za-z0-9_.-]+$"
                   }
                 }
+              },
+              "placement": {
+                "type": "object",
+                "properties": {
+                  "replicas": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "rack": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "count",
+                        "rack"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "observers": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "rack": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "count",
+                        "rack"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "replicas",
+                  "observers"
+                ],
+                "additionalProperties": false
               },
               "observerPromotionPolicy": {
                 "default": "none",

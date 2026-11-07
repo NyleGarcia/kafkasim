@@ -93,6 +93,7 @@
         "minInsyncReplicas": 2,
         "replicaLagTimeMaxMs": 10000
       },
+      "rack": "zone",
       "platform": {
         "type": "kubernetes",
         "workers": [
@@ -133,7 +134,6 @@
             "zone": "use1-az3"
           }
         ],
-        "rackAwareness": true,
         "storage": "zoneLocked",
         "selfBalancing": {
           "enabled": false
@@ -187,6 +187,7 @@
         "minInsyncReplicas": 2,
         "replicaLagTimeMaxMs": 10000
       },
+      "rack": "zone",
       "platform": {
         "type": "kubernetes",
         "workers": [
@@ -227,7 +228,6 @@
             "zone": "usw2-az3"
           }
         ],
-        "rackAwareness": true,
         "storage": "zoneLocked",
         "selfBalancing": {
           "enabled": false

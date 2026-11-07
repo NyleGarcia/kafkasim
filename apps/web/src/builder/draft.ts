@@ -4,9 +4,12 @@
  * never leave dangling ids behind (topics → removed brokers, clients → removed
  * topics, actions → removed nodes, …). Validation is the engine's own parser.
  */
-import { assignReplicas, Cluster, Consumer, expandLocation, locationsOf, Manifest, Platform, Producer, Topic, validateRefs, type ActionT, type ClusterT, type ConsumerT, type ProducerT, type TopicT } from '@kafkasim/engine';
+import { assignReplicas, Cluster, placementFor, rackIds, Consumer, expandLocation, locationsOf, Manifest, Platform, Producer, Topic, validateRefs, type ActionT, type ClusterT, type ConsumerT, type ProducerT, type TopicT } from '@kafkasim/engine';
 
 export type Draft = Manifest;
+
+/** per region/AZ cap for controllers, brokers and k8s workers (engine handles far more; this keeps the UI sane) */
+export const MAX_PER_LOCATION = 64;
 
 const edit = (d: Draft, fn: (x: Draft) => void): Draft => {
   const x = structuredClone(d);
@@ -297,13 +300,18 @@ export function removeCluster(d: Draft, id: string): Draft | string {
   });
 }
 
-export const patchCluster = (d: Draft, id: string, patch: Partial<Pick<ClusterT, 'name' | 'flavor'>>) =>
+export const patchCluster = (d: Draft, id: string, patch: Partial<Pick<ClusterT, 'name' | 'flavor' | 'rack'>>) =>
   edit(d, (x) => {
     const c = x.clusters.find((k) => k.id === id)!;
     Object.assign(c, patch);
     if (patch.flavor === 'apache') {
       // Confluent-only features can't stay on an apache cluster
       for (const t of x.topics.filter((t) => t.cluster === id)) {
+        if (t.placement) {
+          // RPP is Confluent-only: keep the replica count as a plain RF
+          t.replicationFactor = Math.min(c.brokers.length, t.placement.replicas.reduce((a, r) => a + r.count, 0));
+          delete t.placement;
+        }
         delete t.observers;
         t.observerPromotionPolicy = 'none';
         if (t.mirror?.type === 'cluster_link') t.mirror.type = 'mm2';
@@ -319,7 +327,7 @@ export function setNodeCount(d: Draft, clusterId: string, kind: 'controllers' | 
   const here = c[kind].filter((x) => x.region === region);
   const elsewhere = c[kind].length - here.length;
   if (n < 0 || elsewhere + n < 1) return `Cluster ${clusterId} needs at least one ${kind === 'brokers' ? 'broker' : 'controller'}.`;
-  if (n > 9) return 'Up to 9 per region keeps the canvas readable.';
+  if (n > MAX_PER_LOCATION) return `Up to ${MAX_PER_LOCATION} per location.`;
   return edit(d, (x) => {
     const xc = x.clusters.find((k) => k.id === clusterId)!;
     const list = xc[kind];
@@ -389,7 +397,7 @@ export function patchTopic(d: Draft, cluster: string, name: string, patch: Parti
     // keep explicit placement in step with the partition count
     if (patch.partitions !== undefined) {
       if (t.replicas) {
-        const auto = assignReplicas(c, { ...t, replicas: undefined });
+        const auto = assignReplicas(c, { ...t, replicas: undefined }, x);
         t.replicas = Array.from({ length: t.partitions }, (_, i) => t.replicas![i] ?? auto[i]!);
       }
       if (t.observers) t.observers = Array.from({ length: t.partitions }, (_, i) => t.observers![i] ?? []);
@@ -403,20 +411,49 @@ export function patchTopic(d: Draft, cluster: string, name: string, patch: Parti
   });
 }
 
-/** Switch between automatic (RF) and explicit replica placement. */
-export function setCustomPlacement(d: Draft, cluster: string, name: string, on: boolean) {
+export type PlacementMode = 'auto' | 'custom' | 'rpp';
+
+export const placementMode = (t: TopicT): PlacementMode => (t.placement ? 'rpp' : t.replicas ? 'custom' : 'auto');
+
+/**
+ * Switch a topic between automatic rack-aware placement (RF), explicit per-partition
+ * replicas, and Confluent Replica Placement Policy constraints. The current assignment
+ * carries over where it can.
+ */
+export function setPlacementMode(d: Draft, cluster: string, name: string, mode: PlacementMode) {
   return edit(d, (x) => {
     const t = x.topics[topicIdx(x, cluster, name)]!;
     const c = x.clusters.find((k) => k.id === cluster)!;
-    if (on) {
-      t.replicas = assignReplicas(c, t);
-      delete t.replicationFactor;
-    } else {
-      t.replicationFactor = t.replicas?.[0]?.length ?? Math.min(3, c.brokers.length);
-      delete t.replicas;
+    const now = placementFor(c, t, x);
+    const rf = now.replicas[0]?.length ?? Math.min(3, c.brokers.length);
+    delete t.replicas;
+    delete t.observers;
+    delete t.placement;
+    delete t.replicationFactor;
+    if (mode === 'auto') t.replicationFactor = rf;
+    if (mode === 'custom') {
+      t.replicas = now.replicas;
+      if (now.observers.some((o) => o.length)) t.observers = now.observers;
+    }
+    if (mode === 'rpp') {
+      // spread the current RF over the racks, one replica per rack first
+      const racks = rackIds(c, x);
+      const counts = new Map<string, number>();
+      for (let i = 0; i < rf; i++) counts.set(racks[i % racks.length]!, (counts.get(racks[i % racks.length]!) ?? 0) + 1);
+      t.placement = { replicas: [...counts].map(([rack, count]) => ({ rack, count })), observers: [] };
     }
   });
 }
+
+/** Back-compat helper: explicit placement on/off. */
+export const setCustomPlacement = (d: Draft, cluster: string, name: string, on: boolean) => setPlacementMode(d, cluster, name, on ? 'custom' : 'auto');
+
+export type Rule = { rack: string; count: number };
+
+export const setPlacementRules = (d: Draft, cluster: string, name: string, replicas: Rule[], observers: Rule[]) =>
+  edit(d, (x) => {
+    x.topics[topicIdx(x, cluster, name)]!.placement = { replicas, observers };
+  });
 
 /** Toggle broker in a partition's replica (or observer) list. Order = click order; first = preferred leader. */
 export function toggleReplica(d: Draft, cluster: string, name: string, partition: number, broker: string, role: 'replica' | 'observer') {
@@ -571,7 +608,7 @@ export const patchPlatform = (d: Draft, clusterId: string, patch: Partial<NonNul
   edit(d, (x) => Object.assign(x.clusters.find((k) => k.id === clusterId)!.platform!, patch));
 
 export function setWorkerCount(d: Draft, clusterId: string, zone: string, n: number): Draft | string {
-  if (n < 0 || n > 9) return 'Between 0 and 9 workers per zone.';
+  if (n < 0 || n > MAX_PER_LOCATION) return `Between 0 and ${MAX_PER_LOCATION} workers per zone.`;
   return edit(d, (x) => {
     const pf = x.clusters.find((k) => k.id === clusterId)!.platform!;
     const here = pf.workers.filter((w) => w.zone === zone);

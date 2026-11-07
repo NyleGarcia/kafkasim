@@ -13,7 +13,7 @@
  * Simplifications are listed in docs/architecture/engine-model.md.
  */
 import type { ActionT, ClusterT, ConsumerT, Manifest, MsgKind, ProducerT, SimEvent, TopicT } from './schema.ts';
-import { assignReplicas, expandLocation, initialPlacement, locationsOf, tpKey } from './schema.ts';
+import { expandLocation, initialPlacement, locationsOf, placementFor, tpKey } from './schema.ts';
 import { EventQueue, rng, type Rng } from './util.ts';
 
 type Kind = 'broker' | 'controller' | 'producer' | 'consumer' | 'mm2';
@@ -265,12 +265,13 @@ class Sim {
   private after(ms: number, node: string | null, fn: () => void) {
     this.at(this.now + ms, node, fn);
   }
-  private every(ms: number, node: string, fn: () => void, jitterFirst = true) {
+  /** Periodic work. First run: random within the period (jitter), or `firstMs` if given. */
+  private every(ms: number, node: string, fn: () => void, jitterFirst = true, firstMs?: number) {
     const tick = () => {
       fn();
       this.after(ms, node, tick);
     };
-    this.after(jitterFirst ? this.r.between(0, ms) : ms, node, tick);
+    this.after(firstMs ?? (jitterFirst ? this.r.between(0, ms) : ms), node, tick);
   }
 
   private linkKey(a: string, b: string) {
@@ -420,7 +421,7 @@ class Sim {
   private createTopic(t: TopicT) {
     const c = this.clusters.get(t.cluster)!;
     const brokers = c.def.brokers;
-    const placement = assignReplicas(c.def, t);
+    const placement = placementFor(c.def, t, this.m);
     const mirrorSrc = t.mirror ? tpKey(t.mirror.sourceCluster, t.mirror.sourceTopic, 0).slice(0, -2) : undefined;
     let workerId: string | undefined;
     if (t.mirror?.type === 'mm2') {
@@ -430,8 +431,8 @@ class Sim {
       this.mm2.set(workerId, { id: workerId, dest: [], position: new Map(), inFlight: new Set(), seq: 0 });
     }
     for (let i = 0; i < t.partitions; i++) {
-      const replicas = placement[i]!;
-      const observers = t.observers?.[i] ?? [];
+      const replicas = placement.replicas[i]!;
+      const observers = placement.observers[i]!;
       const key = tpKey(t.cluster, t.name, i);
       const meta: PartMeta = { leader: replicas[0]!, epoch: 0, isr: [...replicas], pEpoch: 0 };
       const p: Partition = {
@@ -540,14 +541,15 @@ class Sim {
         const cfg = this.clusters.get(this.nodes.get(id)!.cluster)!.def.config;
         this.every(cfg.brokerHeartbeatIntervalMs, id, () => this.brokerHeartbeat(id), true);
         if (!initial) this.after(0, id, () => this.brokerHeartbeat(id));
-        // one loop per broker over the partitions it hosts *now* (reassignment adds/removes replicas)
+        // one loop per broker over the partitions it hosts *now* (reassignment adds/removes replicas).
+        // A running cluster's followers are already long-polling at t=0, so start within a few ms.
         this.every(cfg.replicaFetchWaitMaxMs, id, () => {
           for (const p of this.parts.values()) {
             if (!p.rep.has(id)) continue;
             this.followerFetch(p, id);
             if (p.mirror?.type === 'cluster_link') this.linkFetch(p, id);
           }
-        });
+        }, true, this.r.between(0, 5));
         this.every(ISR_CHECK_MS, id, () => {
           for (const p of this.parts.values()) if (p.rep.has(id)) this.isrCheck(p, id);
         });

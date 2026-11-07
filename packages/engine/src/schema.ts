@@ -92,8 +92,6 @@ export const Platform = z.object({
   workers: z.array(K8sWorker).min(1),
   /** zoneLocked: RWO block volume (EBS/PD) pinned to its zone. ephemeral: log lost when the pod moves. */
   storage: z.enum(['zoneLocked', 'ephemeral']).default('zoneLocked'),
-  /** broker.rack = zone (CFK rack awareness). Off ⇒ placement ignores zones. */
-  rackAwareness: z.boolean().default(true),
   /** image start + JVM + log recovery before the broker is up */
   podStartupMs: z.number().int().nonnegative().default(20_000),
   /** node-monitor-grace-period: worker reported NotReady after this */
@@ -120,6 +118,12 @@ export const Cluster = z.object({
   controllers: z.array(z.object({ id: Id, region: Id })).min(1),
   brokers: z.array(z.object({ id: Id, region: Id, rack: z.string().optional() })).min(1),
   config: ClusterConfig.prefault({}),
+  /**
+   * Where broker.rack comes from (rack-aware placement, RPP constraints):
+   * zone = the broker's AZ/location, region = its region, none = no rack awareness.
+   * An explicit broker `rack` overrides zone/region.
+   */
+  rack: z.enum(['zone', 'region', 'none']).default('zone'),
   platform: Platform.optional(),
 });
 
@@ -135,6 +139,8 @@ export const Mirror = z.object({
   fetchIntervalMs: z.number().int().positive().default(500),
 });
 
+export const PlacementRule = z.object({ count: z.number().int().positive(), rack: z.string().min(1) });
+
 export const Topic = z.object({
   cluster: Id,
   name: z.string().min(1),
@@ -145,6 +151,16 @@ export const Topic = z.object({
   replicationFactor: z.number().int().positive().optional(),
   /** Confluent MRC observers per partition (async, never in ISR unless promoted). */
   observers: z.array(z.array(Id)).optional(),
+  /**
+   * Confluent Replica Placement Policy (confluent.placement.constraints):
+   * per-rack counts of sync replicas and observers. Replaces replicationFactor/replicas/observers.
+   */
+  placement: z
+    .object({
+      replicas: z.array(PlacementRule).min(1),
+      observers: z.array(PlacementRule).default([]),
+    })
+    .optional(),
   /** Confluent MRC: promote observers when ISR < min.insync. */
   observerPromotionPolicy: z.enum(['none', 'under-min-isr']).default('none'),
   minInsyncReplicas: z.number().int().positive().optional(),
@@ -415,6 +431,24 @@ export function validateRefs(m: Manifest): void {
       errs.push(`topic ${t.name}: cluster_link requires a confluent-flavor destination cluster`);
     if ((t.observers?.length ?? 0) > 0 && c.flavor !== 'confluent')
       errs.push(`topic ${t.name}: observers require a confluent-flavor cluster`);
+    if (t.placement) {
+      const where = `topic ${t.name}: placement constraints`;
+      if (c.flavor !== 'confluent') errs.push(`${where} (RPP) require a confluent-flavor cluster`);
+      if (c.rack === 'none') errs.push(`${where} need rack awareness: set cluster ${c.id} rack to zone or region`);
+      if (t.replicas || t.observers || t.replicationFactor) errs.push(`${where} replace replicationFactor/replicas/observers; set only one`);
+      const racks = new Map<string, number>();
+      for (const b of c.brokers) {
+        const r = brokerRack(c, b, m);
+        racks.set(r, (racks.get(r) ?? 0) + 1);
+      }
+      const need = new Map<string, number>();
+      for (const rule of [...t.placement.replicas, ...t.placement.observers]) {
+        if (!racks.has(rule.rack)) errs.push(`${where}: no broker has rack "${rule.rack}" (racks: ${[...racks.keys()].join(', ')})`);
+        need.set(rule.rack, (need.get(rule.rack) ?? 0) + rule.count);
+      }
+      for (const [r, n] of need) if (racks.has(r) && n > racks.get(r)!) errs.push(`${where}: rack "${r}" needs ${n} brokers, has ${racks.get(r)}`);
+      if (t.placement.observers.length && c.flavor !== 'confluent') errs.push(`${where}: observers require confluent`);
+    }
   }
   for (const t of m.topics)
     if (t.mirror && !topics.has(`${t.mirror.sourceCluster}/${t.mirror.sourceTopic}`))
@@ -454,16 +488,67 @@ export function validateRefs(m: Manifest): void {
   if (errs.length) throw new Error(`manifest "${m.name}" invalid:\n  - ${errs.join('\n  - ')}`);
 }
 
-/** Replica placement when `replicas` is omitted: rack/region-interleaved round robin (rack-aware). */
-export function assignReplicas(cluster: ClusterT, topic: TopicT): string[][] {
-  const by = new Map<string, string[]>();
-  const rackOf = (b: ClusterT['brokers'][number]) => (cluster.platform ? (cluster.platform.rackAwareness ? b.region : 'none') : (b.rack ?? b.region));
-  for (const b of cluster.brokers) by.set(rackOf(b), [...(by.get(rackOf(b)) ?? []), b.id]);
-  const lists = [...by.values()];
+type BrokerT = ClusterT['brokers'][number];
+type RegionsLike = { regions: RegionT[] } | RegionT[];
+const regionList = (r: RegionsLike) => (Array.isArray(r) ? r : r.regions);
+
+/** broker.rack as Kafka sees it, derived from the cluster's rack mode. */
+export function brokerRack(cluster: ClusterT, b: BrokerT, regions: RegionsLike): string {
+  if (cluster.rack === 'none') return 'none';
+  if (b.rack) return b.rack;
+  if (cluster.rack === 'region') return regionList(regions).find((r) => r.id === b.region || r.zones?.some((z) => z.id === b.region))?.id ?? b.region;
+  return b.region;
+}
+
+/** Distinct racks of a cluster, in broker order. */
+export function rackIds(cluster: ClusterT, regions: RegionsLike): string[] {
+  return [...new Set(cluster.brokers.map((b) => brokerRack(cluster, b, regions)))];
+}
+
+/**
+ * Replica (and observer) assignment per partition:
+ *  - placement constraints (RPP): `count` brokers from each named rack, rotated per partition
+ *  - explicit `replicas` / `observers`
+ *  - otherwise rack-interleaved round robin with `replicationFactor` (rack-aware placement)
+ */
+export function placementFor(cluster: ClusterT, topic: TopicT, regions: RegionsLike): { replicas: string[][]; observers: string[][] } {
+  const byRack = new Map<string, string[]>();
+  for (const b of cluster.brokers) {
+    const r = brokerRack(cluster, b, regions);
+    byRack.set(r, [...(byRack.get(r) ?? []), b.id]);
+  }
+  if (topic.placement) {
+    const pl = topic.placement;
+    const replicas: string[][] = [];
+    const observers: string[][] = [];
+    for (let p = 0; p < topic.partitions; p++) {
+      const used = new Set<string>();
+      const take = (rules: { count: number; rack: string }[]) =>
+        rules.flatMap((rule) => {
+          const pool = (byRack.get(rule.rack) ?? []).filter((b) => !used.has(b));
+          const out: string[] = [];
+          for (let k = 0; k < Math.min(rule.count, pool.length); k++) out.push(pool[(p + k) % pool.length]!);
+          for (const b of out) used.add(b);
+          return out;
+        });
+      replicas.push(take(pl.replicas));
+      observers.push(take(pl.observers));
+    }
+    return { replicas, observers };
+  }
+  const lists = [...byRack.values()];
   const order: string[] = [];
   for (let i = 0; order.length < cluster.brokers.length; i++) for (const l of lists) if (l[i]) order.push(l[i]!);
   const rf = topic.replicationFactor ?? Math.min(3, order.length);
-  return Array.from({ length: topic.partitions }, (_, p) => topic.replicas?.[p] ?? Array.from({ length: rf }, (_, k) => order[(p + k) % order.length]!));
+  return {
+    replicas: Array.from({ length: topic.partitions }, (_, p) => topic.replicas?.[p] ?? Array.from({ length: rf }, (_, k) => order[(p + k) % order.length]!)),
+    observers: Array.from({ length: topic.partitions }, (_, p) => topic.observers?.[p] ?? []),
+  };
+}
+
+/** Sync-replica assignment only (see placementFor). */
+export function assignReplicas(cluster: ClusterT, topic: TopicT, regions: RegionsLike = []): string[][] {
+  return placementFor(cluster, topic, regions).replicas;
 }
 
 /**

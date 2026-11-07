@@ -24,6 +24,17 @@ class ComposePlan:
     bootstrap: str
 
 
+def rack_of(manifest: dict, cluster: dict, broker: dict) -> str:
+    """broker.rack per the cluster's rack mode (zone = location, region = its region); explicit rack wins."""
+    if broker.get("rack"):
+        return broker["rack"]
+    if cluster.get("rack", "zone") == "region":
+        for r in manifest["regions"]:
+            if r["id"] == broker["region"] or any(z["id"] == broker["region"] for z in r.get("zones") or []):
+                return r["id"]
+    return broker["region"]
+
+
 def plan(manifest: dict, workdir: Path, project: str = "kafkasim") -> ComposePlan:
     clusters = manifest["clusters"]
     if len(clusters) != 1:
@@ -80,7 +91,6 @@ def plan(manifest: dict, workdir: Path, project: str = "kafkasim") -> ComposePla
             | {
                 "KAFKA_NODE_ID": str(nid),
                 "KAFKA_PROCESS_ROLES": "broker",
-                "KAFKA_BROKER_RACK": x.get("rack") or x["region"],
                 "KAFKA_LISTENERS": f"PLAINTEXT://:19092,HOST://:{port}",
                 "KAFKA_ADVERTISED_LISTENERS": f"PLAINTEXT://{x['id']}:19092,HOST://localhost:{port}",
                 "KAFKA_INTER_BROKER_LISTENER_NAME": "PLAINTEXT",
@@ -95,7 +105,8 @@ def plan(manifest: dict, workdir: Path, project: str = "kafkasim") -> ComposePla
                 "KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR": str(min(3, len(brk))),
                 "KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS": "0",
                 "KAFKA_AUTO_CREATE_TOPICS_ENABLE": "false",
-            },
+            }
+            | ({"KAFKA_BROKER_RACK": rack_of(manifest, c, x)} if c.get("rack", "zone") != "none" else {}),
         }
     doc = {"name": project, "services": services}
     workdir.mkdir(parents=True, exist_ok=True)

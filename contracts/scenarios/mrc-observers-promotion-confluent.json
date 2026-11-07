@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "MRC observers + promotion (Confluent)",
-  "description": "Confluent Multi-Region Cluster: sync replicas in east, async observers in west (outside the ISR, so they add no WAN latency to acks=all). When east loses brokers and the ISR drops below min.insync, observerPromotionPolicy=under-min-isr adds caught-up observers to the ISR so writes continue.",
+  "description": "Confluent Multi-Region Cluster with a Replica Placement Policy: 2 sync replicas in rack east, 2 async observers in rack west (outside the ISR, so they add no WAN latency to acks=all). When east loses brokers and the ISR drops below min.insync, observerPromotionPolicy=under-min-isr adds caught-up observers to the ISR so writes continue.",
   "requiresConfluent": true,
   "durationMs": 45000,
   "regions": [
@@ -67,18 +67,20 @@
       "cluster": "mrc",
       "name": "payments",
       "partitions": 1,
-      "replicas": [
-        [
-          "e1",
-          "e2"
+      "placement": {
+        "replicas": [
+          {
+            "count": 2,
+            "rack": "east"
+          }
+        ],
+        "observers": [
+          {
+            "count": 2,
+            "rack": "west"
+          }
         ]
-      ],
-      "observers": [
-        [
-          "w1",
-          "w2"
-        ]
-      ],
+      },
       "observerPromotionPolicy": "under-min-isr"
     }
   ],

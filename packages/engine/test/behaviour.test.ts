@@ -4,7 +4,7 @@
  * assertions run against those recordings (harness/calibrate.py).
  */
 import { describe, expect, it } from 'vitest';
-import { buildTimeline, parseManifest, scenarios, simulate, viewAt, type ManifestInput, type SimEvent } from '../src/index.ts';
+import { buildTimeline, parseManifest, placementFor, rackIds, scenarios, simulate, viewAt, type ManifestInput, type SimEvent } from '../src/index.ts';
 
 const byName = (prefix: string) => {
   const s = scenarios.find((x) => x.name.startsWith(prefix));
@@ -28,7 +28,7 @@ describe('manifest validation', () => {
   it('rejects Confluent features on an apache cluster', () => {
     const bad = byName('MRC observers');
     bad.clusters[0]!.flavor = 'apache';
-    expect(() => parseManifest(bad)).toThrow(/observers require a confluent-flavor/);
+    expect(() => parseManifest(bad)).toThrow(/require a confluent-flavor cluster/);
   });
   it('every built-in scenario parses', () => {
     for (const s of scenarios) expect(() => parseManifest(s)).not.toThrow();
@@ -298,7 +298,7 @@ describe('Kubernetes / CFK platform', () => {
     const r = run(byName('Kubernetes: rack awareness off'));
     expect(of(r.events, 'LEADER_CHANGE').some((e) => e.leader === null)).toBe(true);
     const on = byName('Kubernetes: rack awareness off');
-    on.clusters[0]!.platform!.rackAwareness = true;
+    on.clusters[0]!.rack = 'zone';
     expect(of(run(on).events, 'LEADER_CHANGE').some((e) => e.leader === null)).toBe(false);
   });
 
@@ -375,5 +375,69 @@ describe('regions with availability zones', () => {
 
   it('zoneless regions still work as single locations (backward compatible)', () => {
     for (const s of scenarios.filter((x) => !x.regions.some((r) => r.zones))) expect(() => parseManifest(s)).not.toThrow();
+  });
+});
+
+describe('rack awareness modes + Replica Placement Policies (RPP)', () => {
+  const regionsOf = (m: ReturnType<typeof parseManifest>) => m;
+
+  it('RPP places sync replicas and observers by rack (MRC scenario)', () => {
+    const m = parseManifest(byName('MRC observers'));
+    const pl = placementFor(m.clusters[0]!, m.topics[0]!, regionsOf(m));
+    expect(pl.replicas[0]!.sort()).toEqual(['e1', 'e2']);
+    expect(pl.observers[0]!.sort()).toEqual(['w1', 'w2']);
+  });
+
+  it('rack = region: racks are regions even when brokers sit in AZs; RPP counts per region', () => {
+    const s = byName('Multi-region CFK');
+    // one stretched cluster over both regions' AZs, racks by region
+    const east = s.clusters[0]!;
+    const west = s.clusters[1]!;
+    east.brokers = [...east.brokers, ...west.brokers];
+    east.controllers = [...east.controllers, ...west.controllers.slice(0, 2)];
+    east.platform!.workers = [...east.platform!.workers, ...west.platform!.workers];
+    east.rack = 'region';
+    s.clusters = [east];
+    s.topics = [{ cluster: 'east', name: 'orders', partitions: 4, placement: { replicas: [{ count: 3, rack: 'us-east-1' }], observers: [{ count: 2, rack: 'us-west-2' }] } }];
+    s.producers = [{ id: 'shop', cluster: 'east', region: 'use1-az2', topic: 'orders', acks: 'all', ratePerSec: 20 }];
+    s.consumers = [];
+    s.actions = [];
+    const m = parseManifest(s);
+    const c = m.clusters[0]!;
+    expect(rackIds(c, m)).toEqual(['us-east-1', 'us-west-2']);
+    const pl = placementFor(c, m.topics[0]!, m);
+    for (let p = 0; p < 4; p++) {
+      expect(pl.replicas[p]!.every((b) => b.startsWith('e'))).toBe(true);
+      expect(pl.replicas[p]).toHaveLength(3);
+      expect(pl.observers[p]!.every((b) => b.startsWith('w'))).toBe(true);
+    }
+    // rotation spreads leaders across the region's brokers
+    expect(new Set(pl.replicas.map((r) => r[0])).size).toBeGreaterThan(1);
+    const r = simulate(m);
+    expect(of(r.events, 'PRODUCE_ACK').length).toBeGreaterThan(0);
+  });
+
+  it('rack = zone vs region changes automatic placement', () => {
+    const base = byName('Multi-region CFK');
+    const m1 = parseManifest(base);
+    const zonePl = placementFor(m1.clusters[0]!, m1.topics[0]!, m1).replicas[0]!;
+    const zoneOf = (b: string) => m1.clusters[0]!.brokers.find((x) => x.id === b)!.region;
+    expect(new Set(zonePl.map(zoneOf)).size).toBe(3); // one per AZ
+    base.clusters[0]!.rack = 'region';
+    const m2 = parseManifest(base);
+    expect(rackIds(m2.clusters[0]!, m2)).toEqual(['us-east-1']); // single rack → no zone spreading guaranteed
+  });
+
+  it('RPP validation: unknown rack, too few brokers, mixed with RF, apache flavor, rack none', () => {
+    const t = (patch: (s: ManifestInput) => void) => {
+      const s = byName('MRC observers');
+      patch(s);
+      return () => parseManifest(s);
+    };
+    expect(t((s) => (s.topics![0]!.placement = { replicas: [{ count: 1, rack: 'mars' }] }))).toThrow(/no broker has rack "mars"/);
+    expect(t((s) => (s.topics![0]!.placement = { replicas: [{ count: 3, rack: 'east' }] }))).toThrow(/rack "east" needs 3 brokers, has 2/);
+    expect(t((s) => (s.topics![0]!.replicationFactor = 2))).toThrow(/replace replicationFactor\/replicas\/observers/);
+    expect(t((s) => (s.clusters[0]!.flavor = 'apache'))).toThrow(/require a confluent-flavor cluster/);
+    expect(t((s) => (s.clusters[0]!.rack = 'none'))).toThrow(/need rack awareness/);
   });
 });

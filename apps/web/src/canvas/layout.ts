@@ -57,6 +57,10 @@ const HEADER = 34;
 const ZONED_HEADER = 58;
 const ZONE_GAP = 8;
 const MIN_COL = 132;
+const INSET = 8;
+/** horizontal slot per node kind (labels under clients/workers need more room) */
+const PITCH = { controller: 44, broker: 44, client: 72, worker: 60 } as const;
+const RADIUS: Record<NodeKind, number> = { controller: 14, broker: 17, producer: 13, consumer: 13, mm2: 13, worker: 16 };
 const ROW = 64;
 const CLUSTER_HEADER = 22;
 const CLUSTER_GAP = 14;
@@ -115,25 +119,29 @@ export function computeLayout(m: Manifest, width: number): Layout {
       const wrk = c.platform?.workers.filter((w) => w.zone === col.id) ?? [];
       // clients of a cluster in a region where it has no servers still need a block
       if (!ctl.length && !brk.length && !cli.length && !wrk.length) continue;
-      const rows = [ctl, brk, cli, wrk].filter((r) => r.length);
-      const h = CLUSTER_HEADER + rows.length * ROW + 6;
+      // Fixed-pitch, left-aligned grid that wraps: appending a node never moves the existing ones.
+      const perRow = (pitch: number) => Math.max(1, Math.floor((col.w - 2 * INSET) / pitch));
+      const lines = (n: number, pitch: number) => (n ? Math.ceil(n / perRow(pitch)) : 0);
+      const rowCount = lines(ctl.length, PITCH.controller) + lines(brk.length, PITCH.broker) + lines(cli.length, PITCH.client) + lines(wrk.length, PITCH.worker);
+      const h = CLUSTER_HEADER + rowCount * ROW + 6;
       clusters.push({ cluster: c.id, region: col.id, x: col.x, y, w: col.w, h, hue: hueOf.get(c.id)!, flavor: c.flavor });
       let ry = y + CLUSTER_HEADER + ROW / 2;
-      const place = (items: { id: string }[], kind: NodeKind | ((id: string) => NodeKind)) => {
+      const place = (items: { id: string }[], kind: NodeKind | ((id: string) => NodeKind), pitch: number) => {
         if (!items.length) return;
-        const step = col.w / (items.length + 1);
-        const r = Math.min(20, step / 2.6);
+        const per = perRow(pitch);
         items.forEach((it, i) => {
           const k = typeof kind === 'function' ? kind(it.id) : kind;
-          nodes.set(it.id, { id: it.id, kind: k, cluster: c.id, region: col.id, x: col.x + step * (i + 1), y: ry, r: k === 'controller' ? r * 0.8 : k === 'broker' ? r : k === 'worker' ? Math.min(14, step * 0.28) : r * 0.75 });
+          const x = col.x + INSET + pitch / 2 + (i % per) * pitch;
+          const yy = ry + Math.floor(i / per) * ROW;
+          nodes.set(it.id, { id: it.id, kind: k, cluster: c.id, region: col.id, x, y: yy, r: RADIUS[k] });
         });
-        ry += ROW;
+        ry += Math.ceil(items.length / per) * ROW;
       };
-      place(ctl, 'controller');
-      place(brk, 'broker');
+      place(ctl, 'controller', PITCH.controller);
+      place(brk, 'broker', PITCH.broker);
       const kinds = new Map(cli.map((x) => [x.id, x.kind]));
-      place(cli, (id) => kinds.get(id)!);
-      place(wrk, 'worker');
+      place(cli, (id) => kinds.get(id)!, PITCH.client);
+      place(wrk, 'worker', PITCH.worker);
       y += h + CLUSTER_GAP;
     }
     maxY = Math.max(maxY, y);

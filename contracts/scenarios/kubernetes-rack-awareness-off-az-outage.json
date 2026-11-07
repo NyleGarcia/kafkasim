@@ -76,6 +76,7 @@
         "minInsyncReplicas": 2,
         "replicaLagTimeMaxMs": 10000
       },
+      "rack": "none",
       "platform": {
         "type": "kubernetes",
         "workers": [
@@ -116,7 +117,6 @@
             "zone": "az3"
           }
         ],
-        "rackAwareness": false,
         "storage": "zoneLocked",
         "selfBalancing": {
           "enabled": false

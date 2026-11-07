@@ -264,6 +264,15 @@
                       }
                     }
                   },
+                  "rack": {
+                    "default": "zone",
+                    "type": "string",
+                    "enum": [
+                      "zone",
+                      "region",
+                      "none"
+                    ]
+                  },
                   "platform": {
                     "type": "object",
                     "properties": {
@@ -318,10 +327,6 @@
                           "zoneLocked",
                           "ephemeral"
                         ]
-                      },
-                      "rackAwareness": {
-                        "default": true,
-                        "type": "boolean"
                       },
                       "podStartupMs": {
                         "default": 20000,
@@ -431,6 +436,58 @@
                         "pattern": "^[A-Za-z0-9_.-]+$"
                       }
                     }
+                  },
+                  "placement": {
+                    "type": "object",
+                    "properties": {
+                      "replicas": {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "count": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "rack": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "count",
+                            "rack"
+                          ]
+                        }
+                      },
+                      "observers": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "count": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "rack": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "count",
+                            "rack"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "replicas"
+                    ]
                   },
                   "observerPromotionPolicy": {
                     "default": "none",

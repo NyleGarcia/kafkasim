@@ -4,7 +4,7 @@
  * touches engine internals.
  */
 import type { Manifest, SimEvent } from './schema.ts';
-import { assignReplicas, initialPlacement, tpKey } from './schema.ts';
+import { initialPlacement, placementFor, tpKey } from './schema.ts';
 
 export interface NodeView {
   id: string;
@@ -113,9 +113,9 @@ export function initialView(m: Manifest): ViewState {
       add(id, 'mm2', t.cluster, t.mirror.workerRegion ?? c.brokers[0]!.region);
       client(id);
     }
-    const placement = assignReplicas(c, t);
+    const placement = placementFor(c, t, m);
     for (let i = 0; i < t.partitions; i++) {
-      const replicas = placement[i]!;
+      const replicas = placement.replicas[i]!;
       const tp = tpKey(t.cluster, t.name, i);
       partitions[tp] = {
         tp,
@@ -123,12 +123,12 @@ export function initialView(m: Manifest): ViewState {
         topic: t.name,
         partition: i,
         replicas,
-        observers: t.observers?.[i] ?? [],
+        observers: placement.observers[i]!,
         leader: replicas[0]!,
         epoch: 0,
         isr: [...replicas],
         hw: 0,
-        leo: Object.fromEntries([...replicas, ...(t.observers?.[i] ?? [])].map((b) => [b, 0])),
+        leo: Object.fromEntries([...replicas, ...placement.observers[i]!].map((b) => [b, 0])),
         ...(t.mirror ? { mirrorOf: tpKey(t.mirror.sourceCluster, t.mirror.sourceTopic, i), mirrorType: t.mirror.type } : {}),
         mirrorLag: 0,
         promoted: false,
