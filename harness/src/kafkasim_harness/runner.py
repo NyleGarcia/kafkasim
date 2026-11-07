@@ -156,8 +156,8 @@ def observe(p: ComposePlan, rec: Recorder, remap: Remap, stop: threading.Event) 
                     e = e | {"t": 0}
                 rec.emit(remap(e))
             prev = snap
-        except Exception as e:  # cluster degraded: keep polling
-            log.debug("observe: %s", e)
+        except Exception as e:  # no broker answered metadata at all: keep polling
+            log.warning("observe: %s", e)
         stop.wait(0.5)
 
 

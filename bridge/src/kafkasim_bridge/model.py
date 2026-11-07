@@ -50,12 +50,11 @@ def diff(prev: Snapshot | None, cur: Snapshot, t: float) -> list[dict]:
         )
     for b in sorted(set(cur.brokers) - prev_brokers):
         out.append({"t": t, "type": "BROKER_FENCE", "cluster": c, "node": node_id(b), "fenced": False, "reason": "registered"})
-    if cur.controller is not None and (prev is None or prev.controller != cur.controller):
-        out.append({"t": t, "type": "NOTE", "level": "info", "message": f"describeCluster reports controller {cur.controller}"})
+    # (describeCluster's `controller` is a random broker under KRaft — not reported)
     for (topic, p), s in sorted(cur.partitions.items()):
         key = tp_key(c, topic, p)
         old = prev.partitions.get((topic, p)) if prev else None
-        if old is None or old.leader != s.leader or old.epoch != s.epoch:
+        if old is None or old.leader != s.leader or s.epoch > old.epoch:
             out.append(
                 {
                     "t": t,

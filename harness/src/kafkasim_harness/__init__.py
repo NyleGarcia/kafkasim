@@ -17,7 +17,9 @@ SCENARIOS = ROOT / "contracts" / "scenarios"
 # scenario slug → signature keys that must match (others are reported, not gating)
 CALIBRATED: dict[str, list[str]] = {
     "single-cluster-broker-failure": ["lost_acked_records", "leadership_left_failed_node", "isr_complete_at_end", "writes_resumed"],
-    "min-insync-replicas-not-enough-replicas": ["lost_acked_records", "not_enough_replicas_seen", "writes_resumed"],
+    # NOT_ENOUGH_REPLICAS is retried inside librdkafka (never surfaced), so gate on its symptom:
+    # acks=all stalls while acks=1 keeps writing
+    "min-insync-replicas-not-enough-replicas": ["lost_acked_records", "acks_all_stalled_5s", "acks_1_stalled_5s", "writes_resumed"],
     "zombie-leader-sigstop": ["leadership_left_failed_node"],
     "unclean-leader-election": [],
 }
