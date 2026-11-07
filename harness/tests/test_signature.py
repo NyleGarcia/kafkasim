@@ -29,3 +29,17 @@ def test_sim_signature_matches_expected_outcomes(tmp_path):
     assert sig["writes_resumed"] is True
     ok, _ = compare(sig, sig, list(sig))
     assert ok
+
+
+def test_topic_requests_pass_client_side_validation(tmp_path):
+    """create_topics validates NewTopic synchronously — no broker needed to catch bad args."""
+    from confluent_kafka.admin import AdminClient
+
+    from kafkasim_harness.runner import new_topics
+
+    admin = AdminClient({"bootstrap.servers": "127.0.0.1:1"})
+    for slug in CALIBRATED:
+        m = json.loads((SCENARIOS / f"{slug}.json").read_text())
+        p = plan(m, tmp_path / slug)
+        futs = admin.create_topics(new_topics(p, m), request_timeout=0.1)
+        assert len(futs) == len(m["topics"])

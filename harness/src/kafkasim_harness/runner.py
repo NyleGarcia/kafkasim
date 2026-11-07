@@ -53,12 +53,10 @@ def wait_ready(bootstrap: str, brokers: int, timeout: float = 120) -> None:
     raise TimeoutError("cluster did not come up")
 
 
-def create_topics(p: ComposePlan, manifest: dict) -> None:
-    admin = AdminClient({"bootstrap.servers": p.bootstrap})
+def new_topics(p: ComposePlan, manifest: dict) -> list[NewTopic]:
     ids = {v: k for k, v in p.names.items()}
-    c = manifest["clusters"][0]
-    brokers = [b["id"] for b in c["brokers"]]
-    new = []
+    brokers = [b["id"] for b in manifest["clusters"][0]["brokers"]]
+    out = []
     for t in manifest.get("topics", []):
         n = t.get("partitions", 1)
         if t.get("replicas"):
@@ -69,9 +67,15 @@ def create_topics(p: ComposePlan, manifest: dict) -> None:
         cfg = {}
         if t.get("minInsyncReplicas"):
             cfg["min.insync.replicas"] = str(t["minInsyncReplicas"])
-        # -1 = "use replica_assignment" (librdkafka rejects a partition count alongside an assignment)
-        new.append(NewTopic(t["name"], num_partitions=-1, replication_factor=-1, replica_assignment=assign, config=cfg))
-    for name, fut in admin.create_topics(new, request_timeout=30).items():
+        # confluent-kafka 2.16: num_partitions must equal len(assignment), replication_factor must be -1
+        # (its docstring still says -1 for both; create_topics rejects that)
+        out.append(NewTopic(t["name"], num_partitions=len(assign), replication_factor=-1, replica_assignment=assign, config=cfg))
+    return out
+
+
+def create_topics(p: ComposePlan, manifest: dict) -> None:
+    admin = AdminClient({"bootstrap.servers": p.bootstrap})
+    for name, fut in admin.create_topics(new_topics(p, manifest), request_timeout=30).items():
         fut.result()
         log.info("created topic %s", name)
 
