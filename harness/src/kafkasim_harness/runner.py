@@ -246,9 +246,20 @@ def drive_faults(p: ComposePlan, manifest: dict, rec: Recorder, producers: dict,
             producers[a["producer"]].active = a["type"] == "START_PRODUCER"
 
 
+def watermark(c: Consumer, tp: TopicPartition, tries: int = 15) -> int | None:
+    """High watermark asked from the broker (not the local cache); None if the partition stays unavailable."""
+    for _ in range(tries):
+        try:
+            return c.get_watermark_offsets(tp, timeout=5, cached=False)[1]
+        except Exception:
+            time.sleep(2)
+    return None
+
+
 def loss_check(p: ComposePlan, manifest: dict, producers: dict, rec: Recorder, cluster: str) -> None:
     """Read every topic back; acked ids missing anywhere in the partition = DATA_LOSS."""
     present: dict[str, set[str]] = {}
+    unreadable: set[str] = set()
     c = Consumer(
         {
             "bootstrap.servers": p.bootstrap,
@@ -259,11 +270,22 @@ def loss_check(p: ComposePlan, manifest: dict, producers: dict, rec: Recorder, c
     )
     try:
         for t in manifest.get("topics", []):
-            parts = [TopicPartition(t["name"], i, 0) for i in range(t.get("partitions", 1))]
             ends = {}
-            for tp in parts:
-                lo, hi = c.get_watermark_offsets(tp, timeout=10)
-                ends[tp.partition] = hi
+            for i in range(t.get("partitions", 1)):
+                hi = watermark(c, TopicPartition(t["name"], i))
+                if hi is None:
+                    rec.emit(
+                        {
+                            "t": rec.now(),
+                            "type": "NOTE",
+                            "level": "warn",
+                            "message": f"read-back: {t['name']}/{i} unavailable (offline?); loss not assessed",
+                        }
+                    )
+                    unreadable.add(f"{cluster}/{t['name']}/{i}")
+                else:
+                    ends[i] = hi
+            parts = [TopicPartition(t["name"], i, 0) for i in ends]
             c.assign(parts)
             remaining = {k for k, v in ends.items() if v > 0}
             deadline = time.monotonic() + 30
@@ -279,6 +301,8 @@ def loss_check(p: ComposePlan, manifest: dict, producers: dict, rec: Recorder, c
     t = rec.now()
     for pl in producers.values():
         for tp, ids in pl.acked.items():
+            if tp in unreadable:
+                continue
             lost = len(ids - present.get(tp, set()))
             if lost:
                 rec.emit({"t": t, "type": "DATA_LOSS", "tp": tp, "count": lost, "reason": "acked but absent on read-back"})

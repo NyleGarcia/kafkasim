@@ -60,17 +60,24 @@ def main(argv: list[str] | None = None) -> None:
     report = ["## kafkasim calibration (real Apache Kafka vs simulator)", ""]
     all_ok = True
     index = []
+    args.out_dir.mkdir(parents=True, exist_ok=True)
     for slug in slugs:
         _, path, manifest = load(slug)
         real_path = args.out_dir / f"{slug}.real.json"
-        real = run_scenario(manifest, real_path, work / slug)
-        sim = sim_log(path, work / f"{slug}.sim.json")
-        ok, rows = compare(signature(sim), signature(real), CALIBRATED.get(slug, []))
+        try:
+            real = run_scenario(manifest, real_path, work / slug)
+            sim = sim_log(path, work / f"{slug}.sim.json")
+            ok, rows = compare(signature(sim), signature(real), CALIBRATED.get(slug, []))
+        except Exception as e:  # one broken scenario must not hide the others' results
+            logging.exception("scenario %s failed", slug)
+            ok, rows = False, [f"| harness error | {type(e).__name__}: {e} | | ❌ |"]
         all_ok &= ok
-        report += [f"### {manifest['name']} {'✅' if ok else '❌'}", "", "| outcome | sim | real Kafka | |", "|---|---|---|---|", *rows, ""]
-        index.append({"file": real_path.name, "name": f"{manifest['name']} — real Kafka 4.2"})
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    (args.out_dir / "index.json").write_text(json.dumps(index, indent=2))
+        section = [f"### {manifest['name']} {'✅' if ok else '❌'}", "", "| outcome | sim | real Kafka | |", "|---|---|---|---|", *rows, ""]
+        print("\n".join(section), flush=True)
+        report += section
+        if real_path.exists():
+            index.append({"file": real_path.name, "name": f"{manifest['name']} — real Kafka 4.2"})
+            (args.out_dir / "index.json").write_text(json.dumps(index, indent=2))
     text = "\n".join(report)
     print(text)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
