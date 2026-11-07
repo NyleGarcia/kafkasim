@@ -24,6 +24,9 @@ import { SimRunner } from '@/sim/runner';
 
 type Mode = 'simulate' | 'replay' | 'live';
 
+/** continuous mode stops extending here (memory: ~25 MB of events per simulated minute for big clusters) */
+const MAX_RUN_MS = 30 * 60_000;
+
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const SCENARIOS = scenarios.map((s) => ({ input: s, slug: slug(s.name), name: s.name }));
 
@@ -49,14 +52,31 @@ export default function App() {
   const runner = useRef<SimRunner | null>(null);
   const live = useLiveBridge();
 
-  const input = custom ?? SCENARIOS[scenarioIdx]!.input;
+  const baseInput = custom ?? SCENARIOS[scenarioIdx]!.input;
+  /** run length override (ms); null = the scenario's own durationMs */
+  const [lengthMs, setLengthMs] = useState<number | null>(null);
+  /** keep running past the end: extend the (deterministic) simulation as playback approaches it */
+  const [continuous, setContinuous] = useState(true);
+  const scenarioMs = useMemo(() => {
+    try {
+      return parseManifest(baseInput).durationMs;
+    } catch {
+      return 60_000;
+    }
+  }, [baseInput]);
+  const input = useMemo(() => (lengthMs ? { ...(baseInput as object), durationMs: lengthMs } : baseInput), [baseInput, lengthMs]);
   const liveTimeline = live.timeline;
   const liveManifest = live.manifest;
   const active = useMemo(
     () => (mode === 'simulate' ? sim : mode === 'replay' ? replay : liveTimeline && liveManifest ? { timeline: liveTimeline, manifest: liveManifest } : null),
     [mode, sim, replay, liveTimeline, liveManifest],
   );
-  const pb = usePlayback(active?.timeline.endT ?? 0, { follow: mode === 'live' });
+  const pb = usePlayback(active?.timeline.endT ?? 0, {
+    follow: mode === 'live',
+    hold: mode === 'simulate' && continuous,
+    // extend the deterministic run as playback approaches its end (prefix stays identical)
+    onNearEnd: (end) => end < MAX_RUN_MS && setLengthMs(Math.min(MAX_RUN_MS, Math.max(end + 60_000, Math.round(end * 1.5)))),
+  });
   const { seek, setPlaying, tRef } = pb;
 
   useEffect(() => {
@@ -133,6 +153,7 @@ export default function App() {
   );
 
   const pickScenario = (v: string) => {
+    setLengthMs(null);
     setScenarioIdx(Number(v));
     setCustom(null);
     setExtra([]);
@@ -307,6 +328,13 @@ export default function App() {
               onSeek={pb.seek}
               onSpeed={pb.setSpeed}
               injectedAt={mode === 'simulate' ? extra.map((a) => a.at) : []}
+              {...(mode === 'simulate'
+                ? {
+                    length: { current: sim?.timeline.endT ?? 0, scenario: scenarioMs, max: MAX_RUN_MS, continuous },
+                    onLength: (ms: number | null) => setLengthMs(ms),
+                    onContinuous: setContinuous,
+                  }
+                : {})}
             />
             <EventLog timeline={active.timeline} t={pb.t} onSeek={pb.seek} />
           </div>
@@ -324,8 +352,9 @@ export default function App() {
       <ScenarioBuilder
         open={editOpen !== null}
         onOpenChange={(o) => !o && setEditOpen(null)}
-        initial={editOpen === 'new' ? blankDraft() : parsedInput ? input : SCENARIOS[0]!.input}
+        initial={editOpen === 'new' ? blankDraft() : parsedInput ? baseInput : SCENARIOS[0]!.input}
         onRun={(m) => {
+          setLengthMs(null);
           setCustom(m);
           setExtra([]);
           seek(0);

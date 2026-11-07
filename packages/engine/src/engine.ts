@@ -586,7 +586,9 @@ class Sim {
         else this.killNode(a.node, 'SIGKILL');
         break;
       case 'RESTART_NODE':
-        this.restartNode(a.node, 'restart');
+        // pods are restarted by kubelet / the StatefulSet, never by hand
+        if (this.pods.has(a.node)) this.note('info', `${a.node} is a Kubernetes pod: kubelet restarts it (RESTART_NODE ignored)`, a.node);
+        else this.restartNode(a.node, 'restart');
         break;
       case 'K8S_NODE_FAIL':
         this.workerFail(a.worker);

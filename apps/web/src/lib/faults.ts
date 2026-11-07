@@ -22,6 +22,8 @@ export function nodeFaults(m: Manifest, n: NodeView): FaultOption[] {
     }
     if (n.status === 'paused') out.push({ label: 'Resume (SIGCONT)', hint: 'wakes up with stale state + buffered requests', action: { type: 'RESUME_NODE', node: n.id } });
     if (n.pod.phase === 'Unknown' || n.pod.phase === 'Pending') out.push({ label: 'Force-delete pod', hint: 'lets the StatefulSet recreate it (needs a worker in its PVC zone)', tone: 'warning', action: { type: 'POD_DELETE', pod: n.id } });
+    if (n.pod.phase === 'ContainerCreating' || n.pod.phase === 'CrashLoopBackOff')
+      out.push({ label: 'Delete pod', hint: 'StatefulSet recreates it from scratch (restart counter and back-off reset)', tone: 'warning', action: { type: 'POD_DELETE', pod: n.id } });
     return out;
   }
   if (n.status === 'running') {

@@ -441,6 +441,13 @@ export function validateRefs(m: Manifest): void {
         const r = brokerRack(c, b, m);
         racks.set(r, (racks.get(r) ?? 0) + 1);
       }
+      for (const [kind, rules] of [['replica', t.placement.replicas], ['observer', t.placement.observers]] as const) {
+        const seen = new Set<string>();
+        for (const r of rules) {
+          if (seen.has(r.rack)) errs.push(`${where}: rack "${r.rack}" appears twice in ${kind} constraints; merge them into one count`);
+          seen.add(r.rack);
+        }
+      }
       const need = new Map<string, number>();
       for (const rule of [...t.placement.replicas, ...t.placement.observers]) {
         if (!racks.has(rule.rack)) errs.push(`${where}: no broker has rack "${rule.rack}" (racks: ${[...racks.keys()].join(', ')})`);

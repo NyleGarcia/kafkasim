@@ -89,7 +89,8 @@ function drawRegions(ctx: CanvasRenderingContext2D, L: Layout, v: ViewState) {
     ctx.font = `600 ${zonedHeader ? 10 : 11}px "Inter Variable", sans-serif`;
     ctx.textAlign = 'left';
     const y = zonedHeader ? top + 14 : 20;
-    ctx.fillText(r.name.toUpperCase(), r.x + 4, y);
+    // a zoneless region under a zoned header already has its name on the band
+    if (!(zonedHeader && r.id === r.region)) ctx.fillText(r.name.toUpperCase(), r.x + 4, y);
     if (cut && r.w > 120) {
       ctx.textAlign = 'right';
       ctx.fillText('CUT OFF', r.x + r.w - 4, y);
@@ -294,12 +295,13 @@ function drawNode(ctx: CanvasRenderingContext2D, n: NodeBox, v: ViewState, o: Re
   ctx.fillStyle = C.muted;
   let sub = '';
   const phase = nv.pod && nv.pod.phase !== 'Running' ? nv.pod.phase : null;
-  if (phase) sub = phase === 'ContainerCreating' ? 'STARTING' : phase === 'CrashLoopBackOff' ? 'CRASHLOOP' : phase.toUpperCase();
+  // ≤7 chars: fits the fixed 44px node pitch without colliding with neighbours
+  if (phase) sub = { ContainerCreating: 'BOOTING', CrashLoopBackOff: 'BACKOFF', Pending: 'PENDING', Terminating: 'STOP', Unknown: 'UNKNOWN', Running: '' }[phase];
   else if (status !== 'running') sub = status === 'dead' ? 'DEAD' : 'PAUSED';
   else if (nv.fenced) sub = 'FENCED';
   else if (n.kind === 'broker') {
     const led = Object.values(v.partitions).filter((p) => p.leader === n.id).length;
-    sub = led ? `leads ${led}` : '';
+    sub = led ? (led > 9 ? `L${led}` : `leads ${led}`) : '';
   } else if (n.kind === 'controller') sub = nv.activeController ? 'ACTIVE' : '';
   if (sub) {
     ctx.fillStyle = phase ? POD_TONE[phase]! : status === 'dead' ? C.critical : status === 'paused' || nv.fenced ? C.warning : nv.activeController ? C.observer : C.muted;

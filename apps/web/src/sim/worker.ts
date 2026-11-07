@@ -21,7 +21,8 @@ self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
     if (req.kind === 'simulate') {
       const manifest = parseManifest(req.manifest);
       const r = simulate(manifest, { extraActions: req.extraActions });
-      const timeline = buildTimeline(manifest, r.events, r.endT);
+      // ~600 keyframes regardless of length: long runs scrub as fast as short ones
+      const timeline = buildTimeline(manifest, r.events, r.endT, Math.max(500, Math.ceil(r.endT / 600)));
       post({ id: req.id, ok: true, timeline, manifest, wallMs: performance.now() - t0, source: 'sim' });
     } else {
       const log = EventLog.parse(req.log);

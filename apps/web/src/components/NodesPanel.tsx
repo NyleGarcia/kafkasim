@@ -36,6 +36,11 @@ export function NodesPanel({ manifest, view, onFault, disabled }: { manifest: Ma
                           <ChevronDown className="size-3 opacity-60" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent className="w-56">
+                          {opts.length === 0 && (
+                            <DropdownMenuItem disabled className="text-xs">
+                              Nothing to inject while {n.pod ? `pod is ${n.pod.phase}` : n.status}
+                            </DropdownMenuItem>
+                          )}
                           {opts.map((o) => (
                             <DropdownMenuItem key={o.label} onSelect={() => onFault(o)} className={cn(o.tone === 'critical' && 'text-critical', o.tone === 'warning' && 'text-warning')}>
                               {o.label}

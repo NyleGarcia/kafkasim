@@ -21,9 +21,16 @@ interface Props {
   onSeek: (t: number) => void;
   onSpeed: (s: number) => void;
   injectedAt: number[];
+  /** Simulate mode only: run length + continuous toggle */
+  length?: { current: number; scenario: number; max: number; continuous: boolean };
+  onLength?: (ms: number | null) => void;
+  onContinuous?: (on: boolean) => void;
 }
 
-export function TimelineBar({ timeline, t, playing, speed, live, onPlay, onSeek, onSpeed, injectedAt }: Props) {
+const LENGTHS = [2, 5, 10, 30].map((m) => m * 60_000);
+const fmtLen = (ms: number) => (ms >= 60_000 ? `${+(ms / 60_000).toFixed(1)} min` : `${Math.round(ms / 1000)} s`);
+
+export function TimelineBar({ timeline, t, playing, speed, live, onPlay, onSeek, onSpeed, injectedAt, length, onLength, onContinuous }: Props) {
   const end = Math.max(1, timeline.endT);
   const markers = useMemo(() => {
     const out: { t: number; tone: string; label: string; e: SimEvent }[] = [];
@@ -58,7 +65,33 @@ export function TimelineBar({ timeline, t, playing, speed, live, onPlay, onSeek,
         <span className="readout min-w-28 text-sm">
           {fmtT(t)} <span className="text-muted-foreground">/ {fmtT(end)}</span>
         </span>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {length && onLength && onContinuous && (
+            <>
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground" title={`When playback reaches the end, the simulation is extended (deterministically) up to ${fmtLen(length.max)}`}>
+                <input type="checkbox" checked={length.continuous} onChange={(e) => onContinuous(e.target.checked)} className="accent-primary" />
+                keep running
+              </label>
+              <span className="text-xs text-muted-foreground">length</span>
+              <Select
+                value={LENGTHS.includes(length.current) ? String(length.current) : length.current === length.scenario ? 'scenario' : 'current'}
+                onValueChange={(v) => onLength(v === 'scenario' ? null : v === 'current' ? length.current : Number(v))}
+              >
+                <SelectTrigger size="sm" className="readout w-32" aria-label="Run length">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="scenario">scenario ({fmtLen(length.scenario)})</SelectItem>
+                  {!LENGTHS.includes(length.current) && length.current !== length.scenario && <SelectItem value="current">{fmtLen(length.current)} (extended)</SelectItem>}
+                  {LENGTHS.map((ms) => (
+                    <SelectItem key={ms} value={String(ms)}>
+                      {fmtLen(ms)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          )}
           <span className="text-xs text-muted-foreground">speed</span>
           <Select value={String(speed)} onValueChange={(v) => onSpeed(Number(v))}>
             <SelectTrigger size="sm" className="readout w-20" aria-label="Playback speed">

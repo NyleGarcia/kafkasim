@@ -8,6 +8,11 @@ updated: 2026-11-07
 
 ## Unreleased
 
+- Longer runs: a **keep running** toggle (on by default) extends the deterministic simulation as playback nears the end, up to 30 min. A run-length selector offers the scenario's own length, 2, 5, 10 or 30 min. Keyframes adapt to the run length.
+- Fault menus are never empty: starting or crash-looping pods offer "Delete pod", and any other state shows why nothing applies.
+- Pod phase labels shortened (BOOTING/BACKOFF/…) so they don't collide at the fixed node pitch. A zoneless region is no longer labelled twice.
+- `RESTART_NODE` on a Kubernetes pod is ignored with a note (kubelet owns restarts). RPP rules that name the same rack twice are rejected, and the builder merges them.
+
 - Rack awareness per cluster (per AZ / per region / off) for VMs and Kubernetes. Confluent Replica Placement Policies (`confluent.placement.constraints`) per topic, with a builder editor and a live assignment preview. The MRC scenario now uses an RPP.
 - Up to 64 controllers, brokers or workers per location, with typeable counts. The canvas uses a fixed-pitch wrapping grid, so adding a node never moves existing ones. The builder tables have fixed columns.
 - Followers long-poll from t=0, which removes a startup latency artifact.

@@ -459,7 +459,14 @@ function PlacementRules({ kind, rules, racks, counts, used, onChange }: RulesPro
           const next = [...rules];
           if (nr) next[i] = nr;
           else next.splice(i, 1);
-          onChange(next);
+          // same rack twice → one rule with the summed count (Confluent constraints are per rack)
+          const merged: D.Rule[] = [];
+          for (const x of next) {
+            const m = merged.find((y) => y.rack === x.rack);
+            if (m) m.count += x.count;
+            else merged.push({ ...x });
+          }
+          onChange(merged);
         };
         return (
           <div key={i} className="flex flex-wrap items-center gap-2">
